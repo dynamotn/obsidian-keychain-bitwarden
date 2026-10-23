@@ -12,7 +12,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fetchHttpClient } from "../helpers/fetchHttp";
 import { KdfType } from "../../src/bw/crypto";
 import { makeDevice } from "../helpers/device";
-import { registerAccount, type TestAccount } from "./account";
+import {
+  createFolder,
+  createOrganization,
+  createOrganizationNote,
+  readOrganizationNote,
+  registerAccount,
+  type TestAccount,
+} from "./account";
 import { startTlsProxy, type TlsProxy } from "./tls-proxy";
 
 const URL_ = process.env.BW_IT_URL;
@@ -89,6 +96,30 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     expect(a.store.get("race-key")).toBe("from-a");
   });
 
+  it("syncs an organization item both ways, keeping it in its organization", async () => {
+    const org = await createOrganization(URL_!, account);
+    const folder = await createFolder(URL_!, account, "team-folder");
+    const cipherId = await createOrganizationNote(URL_!, account, org, folder, "team-token", "from the team");
+    const d = makeDevice(fetchHttpClient, account, {
+      serverUrl: URL_!,
+      settings: { folderName: "team-folder", syncOrganizations: true },
+    });
+    await d.controller.unlock(account.password);
+    const first = await d.controller.sync();
+    expect(first.errors).toEqual([]);
+    expect(first.pulled).toEqual(["team-token"]);
+    expect(d.store.get("team-token")).toBe("from the team");
+
+    d.store.set("team-token", "edited in Obsidian");
+    const second = await d.controller.sync();
+    expect(second.errors).toEqual([]);
+    expect(second.pushed).toEqual(["team-token"]);
+    expect(await readOrganizationNote(URL_!, account, org, cipherId)).toEqual({
+      organizationId: org.id,
+      notes: "edited in Obsidian",
+    });
+  });
+
   it("works with an Argon2id account", async () => {
     const argon = await registerAccount(URL_!, { type: KdfType.Argon2id, iterations: 3, memory: 64, parallelism: 4 });
     const d = makeDevice(fetchHttpClient, argon, { serverUrl: URL_! });
@@ -105,6 +136,9 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       a.controller.queueUpload("from-plugin", { kind: "global" });
       await a.controller.sync();
       rbw(["sync"]);
+      // rbw's agent loads organization keys only when it unlocks; earlier tests
+      // add an organization, so make it unlock again (through the fake pinentry).
+      rbw(["lock"]);
       expect(rbw(["get", "--folder", "obsidian", "from-plugin"])).toBe("plugin value ✓");
     });
   });

@@ -312,6 +312,20 @@ class SettingsTab extends PluginSettingTab {
         }),
     );
 
+    new Setting(containerEl)
+      .setName("Sync organization items")
+      .setDesc(
+        "Also sync items of your Bitwarden organizations that you put in the folder. Anyone who holds an " +
+          "organization's key, and a compromised server, can create items in it, so a personal item always wins " +
+          "over an organization item with the same ID. Items you may not edit are only pulled.",
+      )
+      .addToggle((t) =>
+        t.setValue(p.settings.syncOrganizations).onChange(async (v) => {
+          p.settings.syncOrganizations = v;
+          await p.saveSettings();
+        }),
+      );
+
     new Setting(containerEl).setName("Security").setHeading();
     new Setting(containerEl)
       .setName("Remember unlock on this device")

@@ -209,6 +209,48 @@ export async function encryptString(plain: string, key: SymmetricKey): Promise<s
 }
 
 /**
+ * The account's RSA private key, used only to unwrap organization keys.
+ * Bitwarden wraps those with RSA-OAEP: EncString type 4 (SHA-1, what the
+ * clients use) or type 3 (SHA-256).
+ */
+export class AccountPrivateKey {
+  private constructor(private readonly der: Uint8Array<ArrayBuffer>) {}
+
+  /** Decrypts `profile.privateKey` (a PKCS#8 key under the user key). */
+  static async unwrap(encrypted: string, userKey: SymmetricKey): Promise<AccountPrivateKey> {
+    return new AccountPrivateKey(await decryptBytes(encrypted, userKey));
+  }
+
+  async decrypt(value: string): Promise<Uint8Array<ArrayBuffer>> {
+    const dot = value.indexOf(".");
+    const type = dot > 0 ? value.slice(0, dot) : "";
+    const hash = type === "4" ? "SHA-1" : type === "3" ? "SHA-256" : null;
+    if (!hash) throw new CryptoError(`Unsupported organization key type "${type || "?"}"`);
+    let data: Uint8Array<ArrayBuffer>;
+    try {
+      data = fromBase64(value.slice(dot + 1));
+    } catch {
+      throw new CryptoError("Malformed organization key");
+    }
+    let key: CryptoKey;
+    try {
+      key = await subtle.importKey("pkcs8", this.der, { name: "RSA-OAEP", hash }, false, ["decrypt"]);
+    } catch {
+      throw new CryptoError("The account's private key cannot be read");
+    }
+    try {
+      return new Uint8Array(await subtle.decrypt({ name: "RSA-OAEP" }, key, data));
+    } catch {
+      throw new CryptoError("Organization key decryption failed");
+    }
+  }
+
+  wipe(): void {
+    this.der.fill(0);
+  }
+}
+
+/**
  * Keyed fingerprint of a secret value, used to notice local edits without
  * storing the value or a plain (brute-forceable) hash of it.
  */

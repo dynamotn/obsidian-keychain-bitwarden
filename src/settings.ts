@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   folderName: "obsidian",
   conflictPolicy: "ask",
   rememberKey: false,
+  syncOrganizations: false,
   syncIntervalMinutes: 10,
   autoLockMinutes: 0,
 };
@@ -38,6 +39,7 @@ export function parseSettings(raw: unknown): PluginSettings {
       ? (r.conflictPolicy as ConflictPolicy)
       : DEFAULT_SETTINGS.conflictPolicy,
     rememberKey: typeof r.rememberKey === "boolean" ? r.rememberKey : false,
+    syncOrganizations: typeof r.syncOrganizations === "boolean" ? r.syncOrganizations : false,
     syncIntervalMinutes: int("syncIntervalMinutes", 24 * 60),
     autoLockMinutes: int("autoLockMinutes", 24 * 60),
   };

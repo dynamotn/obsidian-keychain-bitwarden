@@ -71,6 +71,10 @@ export interface CipherDto {
   reprompt?: number;
   revisionDate: string;
   deletedDate?: string | null;
+  /** Organization items only: false when the user may not change the item. */
+  edit?: boolean;
+  /** Organization items only: false when the organization hides the password from this user. */
+  viewPassword?: boolean;
 }
 
 export interface PasswordHistoryDto {
@@ -83,8 +87,21 @@ export interface FolderDto {
   name: string;
 }
 
+export interface OrganizationDto {
+  id: string;
+  /** The organization key, RSA-encrypted to this account; absent until the membership is confirmed. */
+  key?: string | null;
+  enabled?: boolean;
+}
+
 export interface SyncDto {
-  profile: { id: string; email: string; key: string; privateKey?: string | null };
+  profile: {
+    id: string;
+    email: string;
+    key: string;
+    privateKey?: string | null;
+    organizations?: OrganizationDto[] | null;
+  };
   folders: FolderDto[];
   ciphers: CipherDto[];
 }
@@ -92,7 +109,8 @@ export interface SyncDto {
 export interface CipherRequest {
   type: number;
   folderId: string | null;
-  organizationId: null;
+  /** Kept as is on edits; new items are always personal. */
+  organizationId: string | null;
   name: string;
   notes: string | null;
   fields: FieldDto[];

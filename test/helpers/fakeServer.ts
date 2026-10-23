@@ -2,8 +2,9 @@
 // Behaves like the real one where it matters: revision checks on update,
 // soft delete, server-assigned ids and revision dates.
 
-import type { CipherDto, CipherRequest, FolderDto } from "../../src/bw/api";
+import type { CipherDto, CipherRequest, FolderDto, OrganizationDto } from "../../src/bw/api";
 import {
+  decryptBytes,
   deriveMasterKey,
   encryptBytes,
   encryptString,
@@ -12,6 +13,7 @@ import {
   SymmetricKey,
   type KdfParams,
 } from "../../src/bw/crypto";
+import { toBase64 } from "../../src/bw/encoding";
 import type { HttpClient, HttpRequest } from "../../src/bw/http";
 
 export const SERVER = "https://bw.test";
@@ -27,6 +29,11 @@ export interface Account {
 export class FakeBitwardenServer {
   folders: FolderDto[] = [];
   ciphers: CipherDto[] = [];
+  organizations: OrganizationDto[] = [];
+  /** Organization keys by id, as the organization's members hold them. */
+  readonly orgKeys = new Map<string, SymmetricKey>();
+  /** Real RSA key pair, made on first use: only organization tests need one. */
+  private rsa: CryptoKeyPair | null = null;
   requests: HttpRequest[] = [];
   private tokens = new Set<string>();
   private clock = Date.parse("2026-01-01T00:00:00Z");
@@ -37,7 +44,7 @@ export class FakeBitwardenServer {
     readonly account: Account,
     private readonly kdf: KdfParams,
     private readonly protectedKey: string,
-    private readonly privateKey: string,
+    private privateKey: string,
   ) {}
 
   static async create(kdf: KdfParams = { type: KdfType.PBKDF2, iterations: 5000 }): Promise<FakeBitwardenServer> {
@@ -60,6 +67,39 @@ export class FakeBitwardenServer {
     return new Date(this.clock).toISOString();
   }
 
+  /**
+   * Adds an organization this account is a confirmed member of. Its key is
+   * wrapped to the account's public key with RSA-OAEP, as Bitwarden does:
+   * EncString type 4 (SHA-1) or 3 (SHA-256).
+   */
+  async addOrganization(opts: { keyType?: 3 | 4; key?: string | null } = {}): Promise<string> {
+    if (!this.rsa) {
+      this.rsa = await crypto.subtle.generateKey(
+        { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-1" },
+        true,
+        ["encrypt", "decrypt"],
+      );
+      const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", this.rsa.privateKey));
+      this.privateKey = await encryptBytes(pkcs8, this.account.userKey);
+    }
+    const id = `org-${this.organizations.length + 1}`;
+    const orgKey = await SymmetricKey.generate();
+    this.orgKeys.set(id, orgKey);
+    const type = opts.keyType ?? 4;
+    const spki = await crypto.subtle.exportKey("spki", this.rsa.publicKey);
+    const pub = await crypto.subtle.importKey("spki", spki, { name: "RSA-OAEP", hash: type === 4 ? "SHA-1" : "SHA-256" }, false, [
+      "encrypt",
+    ]);
+    const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, pub, orgKey.exportBytes()));
+    this.organizations.push({ id, key: opts.key === undefined ? `${type}.${toBase64(wrapped)}` : opts.key, enabled: true });
+    return id;
+  }
+
+  /** The key an item is encrypted under: its organization's, or the user key. */
+  async ownerKey(cipher: Pick<CipherDto, "organizationId">): Promise<SymmetricKey> {
+    return cipher.organizationId ? this.orgKeys.get(cipher.organizationId)! : this.account.userKey;
+  }
+
   /** Adds an item the way another Bitwarden client would. */
   async addItem(opts: {
     folder: string;
@@ -69,14 +109,18 @@ export class FakeBitwardenServer {
     id?: string;
     scope?: string;
     itemKey?: boolean;
+    /** Makes it an item of this organization, encrypted with the organization's key. */
+    organization?: string;
+    edit?: boolean;
+    viewPassword?: boolean;
   }): Promise<CipherDto> {
     const folderId = this.folders.find((f) => f.id === opts.folder)?.id ?? (await this.addFolder(opts.folder)).id;
-    const userKey = this.account.userKey;
-    let key = userKey;
+    const ownerKey = await this.ownerKey({ organizationId: opts.organization ?? null });
+    let key = ownerKey;
     let wrappedKey: string | null = null;
     if (opts.itemKey) {
       key = await SymmetricKey.generate();
-      wrappedKey = await encryptBytes(key.exportBytes(), userKey);
+      wrappedKey = await encryptBytes(key.exportBytes(), ownerKey);
     }
     const fields = [];
     if (opts.id) fields.push({ type: 0, name: await encryptString("obsidian-id", key), value: await encryptString(opts.id, key) });
@@ -90,7 +134,7 @@ export class FakeBitwardenServer {
       id: crypto.randomUUID(),
       type,
       folderId,
-      organizationId: null,
+      organizationId: opts.organization ?? null,
       name: await encryptString(opts.name, key),
       notes: type === 2 ? encValue : await encryptString("login notes", key),
       fields,
@@ -99,6 +143,7 @@ export class FakeBitwardenServer {
       key: wrappedKey,
       revisionDate: this.nextRevision(),
       deletedDate: null,
+      ...(opts.organization ? { edit: opts.edit ?? true, viewPassword: opts.viewPassword ?? true } : {}),
     };
     this.ciphers.push(cipher);
     return cipher;
@@ -112,11 +157,8 @@ export class FakeBitwardenServer {
 
   async editValue(cipherId: string, value: string): Promise<void> {
     const c = this.ciphers.find((x) => x.id === cipherId)!;
-    let key = this.account.userKey;
-    if (c.key) {
-      const { decryptBytes } = await import("../../src/bw/crypto");
-      key = await SymmetricKey.fromBytes(await decryptBytes(c.key, key));
-    }
+    let key = await this.ownerKey(c);
+    if (c.key) key = await SymmetricKey.fromBytes(await decryptBytes(c.key, key));
     const enc = await encryptString(value, key);
     if (c.type === 1) c.login = { ...c.login, password: enc };
     else c.notes = enc;
@@ -162,7 +204,13 @@ export class FakeBitwardenServer {
 
     if (path === "/api/sync" && req.method === "GET") {
       return json(200, {
-        profile: { id: "u1", email: this.account.email, key: this.protectedKey, privateKey: this.privateKey },
+        profile: {
+          id: "u1",
+          email: this.account.email,
+          key: this.protectedKey,
+          privateKey: this.privateKey,
+          organizations: this.organizations,
+        },
         folders: this.folders,
         ciphers: this.ciphers,
       });
@@ -191,6 +239,12 @@ export class FakeBitwardenServer {
       const idx = this.ciphers.findIndex((x) => x.id === upd[1]);
       if (idx < 0) return json(404, { message: "Not found" });
       const current = this.ciphers[idx]!;
+      // Like the real server: an edit cannot move an item between owners, and
+      // needs edit rights in its organization.
+      if ((body!.organizationId ?? null) !== (current.organizationId ?? null)) {
+        return json(400, { message: "The organization of an item cannot be changed this way." });
+      }
+      if (current.edit === false) return json(400, { message: "You do not have permissions to edit this." });
       if (body!.lastKnownRevisionDate && body!.lastKnownRevisionDate !== current.revisionDate) {
         return json(400, {
           message: "The model state is invalid.",
@@ -199,7 +253,13 @@ export class FakeBitwardenServer {
           },
         });
       }
-      const next = { ...this.toCipher(body!), id: current.id, revisionDate: this.nextRevision() };
+      const next: CipherDto = {
+        ...this.toCipher(body!),
+        id: current.id,
+        revisionDate: this.nextRevision(),
+        // Computed by the server from the user's rights, not sent by clients.
+        ...(current.organizationId ? { edit: current.edit, viewPassword: current.viewPassword } : {}),
+      };
       this.ciphers[idx] = next;
       return json(200, next);
     }

@@ -23,6 +23,8 @@ export interface ControllerSettings {
   folderName: string;
   conflictPolicy: ConflictPolicy;
   rememberKey: boolean;
+  /** Also sync organization items in the folder. Off by default: see the security notes. */
+  syncOrganizations: boolean;
 }
 
 export interface ControllerDeps {
@@ -249,6 +251,7 @@ export class SecretsController {
         saveState: () => this.save(),
         folderName: settings.folderName.trim() || "obsidian",
         vaultName: this.deps.vaultName,
+        organizations: settings.syncOrganizations,
         policy: settings.conflictPolicy,
         overrides,
         isCancelled,

@@ -56,6 +56,7 @@ export function makeDevice(
     folderName: "obsidian",
     conflictPolicy: "ask",
     rememberKey: false,
+    syncOrganizations: false,
     ...opts.settings,
   };
   const localStorage = new Map<string, unknown>();

@@ -2,6 +2,7 @@
 
 import type { BitwardenApi, CipherDto, CipherRequest, FieldDto, SyncDto } from "./api";
 import {
+  AccountPrivateKey,
   decryptBytes,
   decryptString,
   deriveMasterKey,
@@ -27,9 +28,16 @@ export interface SecretRecord {
   label: string;
   value: string;
   scope: Scope;
+  /** Set for organization items; such items are encrypted with the organization's key. */
+  organizationId: string | null;
+  /** The organization does not let this user change the item. */
+  readOnly: boolean;
   /** Kept to re-encrypt edits without disturbing the parts of the item this plugin does not own. */
   cipher: CipherDto;
 }
+
+/** Organization keys by organization id. */
+export type OrganizationKeys = ReadonlyMap<string, SymmetricKey>;
 
 export interface SkippedItem {
   cipherId: string;
@@ -96,9 +104,52 @@ export async function findFolderIds(sync: SyncDto, userKey: SymmetricKey, folder
   return ids;
 }
 
-async function itemKeyFor(cipher: CipherDto, userKey: SymmetricKey): Promise<SymmetricKey> {
-  if (!cipher.key) return userKey;
-  const raw = await decryptBytes(cipher.key, userKey);
+/**
+ * Unwraps the keys of the organizations this account is a confirmed member
+ * of. An organization whose key cannot be unwrapped is reported, not fatal:
+ * its items are skipped.
+ */
+export async function unlockOrganizationKeys(
+  sync: SyncDto,
+  userKey: SymmetricKey,
+): Promise<{ keys: Map<string, SymmetricKey>; problems: string[] }> {
+  const keys = new Map<string, SymmetricKey>();
+  const problems: string[] = [];
+  const orgs = (sync.profile.organizations ?? []).filter((o) => o.key && o.enabled !== false);
+  if (orgs.length === 0) return { keys, problems };
+  if (!sync.profile.privateKey) return { keys, problems: ["the account has no private key to read organization keys"] };
+  const privateKey = await AccountPrivateKey.unwrap(sync.profile.privateKey, userKey);
+  try {
+    for (const org of orgs) {
+      try {
+        const raw = await privateKey.decrypt(org.key!);
+        try {
+          keys.set(org.id, await SymmetricKey.fromBytes(raw));
+        } finally {
+          raw.fill(0);
+        }
+      } catch (e) {
+        problems.push(`organization ${org.id}: ${(e as Error).message}`);
+      }
+    }
+  } finally {
+    privateKey.wipe();
+  }
+  return { keys, problems };
+}
+
+/** The key an item is encrypted under: the organization's for organization items, else the user key. */
+export function ownerKeyFor(
+  cipher: Pick<CipherDto, "organizationId">,
+  userKey: SymmetricKey,
+  orgKeys: OrganizationKeys | null,
+): SymmetricKey | undefined {
+  return cipher.organizationId ? orgKeys?.get(cipher.organizationId) : userKey;
+}
+
+async function itemKeyFor(cipher: CipherDto, ownerKey: SymmetricKey): Promise<SymmetricKey> {
+  if (!cipher.key) return ownerKey;
+  const raw = await decryptBytes(cipher.key, ownerKey);
   try {
     return await SymmetricKey.fromBytes(raw);
   } finally {
@@ -111,13 +162,15 @@ async function decryptField(value: string | null | undefined, key: SymmetricKey)
 }
 
 /**
- * Decrypts the personal, non-deleted login and secure-note items of one folder.
- * Items elsewhere in the vault are never decrypted.
+ * Decrypts the non-deleted login and secure-note items of one folder. Items
+ * elsewhere in the vault are never decrypted. Organization items are read only
+ * when `orgKeys` is given (the user opted in).
  */
 export async function readFolder(
   sync: SyncDto,
   userKey: SymmetricKey,
   folderId: string,
+  orgKeys: OrganizationKeys | null = null,
 ): Promise<{ records: SecretRecord[]; skipped: SkippedItem[]; present: Set<string> }> {
   const records: SecretRecord[] = [];
   const skipped: SkippedItem[] = [];
@@ -126,17 +179,26 @@ export async function readFolder(
   // unreadable must not look deleted.
   const present = new Set(inFolder.map((c) => c.id));
   for (const cipher of inFolder) {
-    if (cipher.organizationId) {
-      skipped.push({ cipherId: cipher.id, reason: "organization items are not synced" });
+    if (cipher.organizationId && !orgKeys) {
+      skipped.push({ cipherId: cipher.id, reason: "organization items are only synced when enabled in the settings" });
       continue;
     }
     if (cipher.type !== CipherType.SecureNote && cipher.type !== CipherType.Login) {
       skipped.push({ cipherId: cipher.id, reason: "only login and secure note items are synced" });
       continue;
     }
-    let key = userKey;
+    if (cipher.organizationId && cipher.viewPassword === false) {
+      skipped.push({ cipherId: cipher.id, reason: "the organization hides this item's password from you" });
+      continue;
+    }
+    const ownerKey = ownerKeyFor(cipher, userKey, orgKeys);
+    if (!ownerKey) {
+      skipped.push({ cipherId: cipher.id, reason: "the key of its organization is not available" });
+      continue;
+    }
+    let key = ownerKey;
     try {
-      key = await itemKeyFor(cipher, userKey);
+      key = await itemKeyFor(cipher, ownerKey);
       const label = (await decryptField(cipher.name, key)) ?? "";
       const fields = new Map<string, string>();
       for (const f of cipher.fields ?? []) {
@@ -161,11 +223,21 @@ export async function readFolder(
           ? (cipher.login?.password as string | null | undefined)
           : cipher.notes;
       const value = (await decryptField(rawValue, key)) ?? "";
-      records.push({ id, cipherId: cipher.id, revisionDate: cipher.revisionDate, label, value, scope, cipher });
+      records.push({
+        id,
+        cipherId: cipher.id,
+        revisionDate: cipher.revisionDate,
+        label,
+        value,
+        scope,
+        organizationId: cipher.organizationId ?? null,
+        readOnly: Boolean(cipher.organizationId) && cipher.edit === false,
+        cipher,
+      });
     } catch (e) {
       skipped.push({ cipherId: cipher.id, reason: (e as Error).message });
     } finally {
-      if (key !== userKey) key.wipe();
+      if (key !== ownerKey) key.wipe();
     }
   }
   return { records, skipped, present };
@@ -205,16 +277,17 @@ export async function newSecretRequest(
 
 /**
  * Builds an update that changes only the secret value and passes every other
- * part of the item through untouched (still encrypted).
+ * part of the item through untouched (still encrypted). `ownerKey` is the key
+ * the item is encrypted under: the user key, or its organization's key.
  */
 export async function updateValueRequest(
   record: SecretRecord,
-  userKey: SymmetricKey,
+  ownerKey: SymmetricKey,
   value: string,
   now: Date = new Date(),
 ): Promise<CipherRequest> {
   const c = record.cipher;
-  const key = await itemKeyFor(c, userKey);
+  const key = await itemKeyFor(c, ownerKey);
   try {
     const encValue = value === "" ? null : await encryptString(value, key);
     // Start from the item as the server sent it so that properties this plugin
@@ -239,7 +312,8 @@ export async function updateValueRequest(
       ...(passthrough as Partial<CipherRequest>),
       type: c.type,
       folderId: c.folderId,
-      organizationId: null,
+      // An edit never moves an item in or out of its organization.
+      organizationId: c.organizationId ?? null,
       name: c.name,
       notes: c.notes,
       fields: c.fields ?? [],
@@ -267,6 +341,6 @@ export async function updateValueRequest(
     }
     return req;
   } finally {
-    if (key !== userKey) key.wipe();
+    if (key !== ownerKey) key.wipe();
   }
 }

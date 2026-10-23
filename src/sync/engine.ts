@@ -7,10 +7,13 @@ import {
   findFolderIds,
   formatScope,
   newSecretRequest,
+  ownerKeyFor,
   parseScope,
   readFolder,
   scopeApplies,
+  unlockOrganizationKeys,
   updateValueRequest,
+  type OrganizationKeys,
   type SecretRecord,
   type SkippedItem,
 } from "../bw/vault";
@@ -53,6 +56,8 @@ export interface SyncContext {
   saveState: (state: DeviceState) => void;
   folderName: string;
   vaultName: string;
+  /** Also sync organization items in the folder (opt-in: see the security notes). */
+  organizations?: boolean;
   policy: ConflictPolicy;
   overrides?: ReadonlyMap<string, ConflictOverride>;
   /** Checked between steps; true once the vault was locked or the plugin unloaded. */
@@ -94,15 +99,50 @@ export async function runSync(ctx: SyncContext): Promise<SyncReport> {
     passes: 0,
   };
   const fp = await ValueFingerprinter.forUserKey(ctx.userKey);
-  for (let pass = 1; pass <= MAX_PASSES; pass++) {
-    report.passes = pass;
-    report.conflicts = [];
-    report.skipped = [];
-    const again = await runPass(ctx, fp, report);
-    if (!again) return report;
+  const orgKeys: OrgKeyHolder = { keys: null };
+  try {
+    for (let pass = 1; pass <= MAX_PASSES; pass++) {
+      report.passes = pass;
+      report.conflicts = [];
+      report.skipped = [];
+      const again = await runPass(ctx, fp, report, orgKeys);
+      if (!again) return report;
+    }
+    report.errors.push("Secrets kept changing during the sync; try again later.");
+    return report;
+  } finally {
+    wipeKeys(orgKeys);
   }
-  report.errors.push("Secrets kept changing during the sync; try again later.");
-  return report;
+}
+
+/** Organization keys of the current pass; wiped when replaced and when the run ends. */
+interface OrgKeyHolder {
+  keys: Map<string, SymmetricKey> | null;
+}
+
+function wipeKeys(holder: OrgKeyHolder) {
+  for (const key of holder.keys?.values() ?? []) key.wipe();
+  holder.keys = null;
+}
+
+async function loadOrganizationKeys(
+  ctx: SyncContext,
+  sync: SyncDto,
+  holder: OrgKeyHolder,
+  report: SyncReport,
+): Promise<OrganizationKeys | null> {
+  if (!ctx.organizations) return null;
+  wipeKeys(holder);
+  const { keys, problems } = await unlockOrganizationKeys(sync, ctx.userKey);
+  holder.keys = keys;
+  for (const p of problems) if (!report.errors.includes(p)) report.errors.push(p);
+  return keys;
+}
+
+/** Of two items claiming the same id, personal items win over organization items, then the newest. */
+function preferred(a: SecretRecord, b: SecretRecord): [keep: SecretRecord, drop: SecretRecord] {
+  if (!a.organizationId !== !b.organizationId) return a.organizationId ? [b, a] : [a, b];
+  return a.revisionDate >= b.revisionDate ? [a, b] : [b, a];
 }
 
 function checkCancelled(ctx: SyncContext) {
@@ -134,10 +174,16 @@ async function resolveFolder(ctx: SyncContext, sync: SyncDto): Promise<string | 
 }
 
 /** Returns true when another pass is needed (an edit raced with this one). */
-async function runPass(ctx: SyncContext, fp: ValueFingerprinter, report: SyncReport): Promise<boolean> {
+async function runPass(
+  ctx: SyncContext,
+  fp: ValueFingerprinter,
+  report: SyncReport,
+  orgKeyHolder: OrgKeyHolder,
+): Promise<boolean> {
   const { api, userKey, store, state } = ctx;
   const sync = await api.sync();
   checkCancelled(ctx);
+  const orgKeys = await loadOrganizationKeys(ctx, sync, orgKeyHolder, report);
 
   let folderId = await resolveFolder(ctx, sync);
   if (!folderId) {
@@ -146,7 +192,7 @@ async function runPass(ctx: SyncContext, fp: ValueFingerprinter, report: SyncRep
   }
   state.folderId = folderId;
 
-  const { records, skipped, present } = await readFolder(sync, userKey, folderId);
+  const { records, skipped, present } = await readFolder(sync, userKey, folderId, orgKeys);
   report.skipped.push(...skipped);
 
   const byId = new Map<string, SecretRecord>();
@@ -158,9 +204,17 @@ async function runPass(ctx: SyncContext, fp: ValueFingerprinter, report: SyncRep
     if (!scopeApplies(rec.scope, ctx.vaultName, state.deviceId)) continue;
     const other = byId.get(rec.id);
     if (other) {
-      const [keep, drop] = other.revisionDate >= rec.revisionDate ? [other, rec] : [rec, other];
+      // An organization item never takes over a personal secret: anyone who
+      // holds the organization key (or a hostile server) could create one.
+      const [keep, drop] = preferred(other, rec);
       byId.set(rec.id, keep);
-      report.skipped.push({ cipherId: drop.cipherId, reason: `duplicate of "${rec.id}"; the newest item is used` });
+      report.skipped.push({
+        cipherId: drop.cipherId,
+        reason:
+          drop.organizationId && !keep.organizationId
+            ? `duplicate of "${rec.id}"; the personal item is used`
+            : `duplicate of "${rec.id}"; the newest item is used`,
+      });
       continue;
     }
     byId.set(rec.id, rec);
@@ -215,7 +269,7 @@ async function runPass(ctx: SyncContext, fp: ValueFingerprinter, report: SyncRep
     );
   }
 
-  const pass: PassData = { byId, remote, base, localValues, localFingerprints, folderId, fp };
+  const pass: PassData = { byId, remote, base, localValues, localFingerprints, folderId, fp, orgKeys };
   let again = false;
   for (const action of actions) {
     checkCancelled(ctx);
@@ -237,6 +291,7 @@ interface PassData {
   localFingerprints: Map<string, string | null>;
   folderId: string;
   fp: ValueFingerprinter;
+  orgKeys: OrganizationKeys | null;
 }
 
 /** True when the local value changed since this pass read it. */
@@ -279,8 +334,17 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
     }
     case "push": {
       if (!rec || local === null || localFingerprint === null) return false;
+      if (rec.readOnly) {
+        report.skipped.push({
+          cipherId: rec.cipherId,
+          reason: `"${id}" changed on this device, but its organization does not let you edit it; not uploaded`,
+        });
+        return false;
+      }
+      const ownerKey = ownerKeyFor(rec.cipher, userKey, pass.orgKeys);
+      if (!ownerKey) throw new Error("the key of its organization is not available");
       try {
-        const res = await api.updateItem(rec.cipherId, await updateValueRequest(rec, userKey, local));
+        const res = await api.updateItem(rec.cipherId, await updateValueRequest(rec, ownerKey, local));
         state.base[id] = {
           cipherId: res.id,
           revisionDate: res.revisionDate,
