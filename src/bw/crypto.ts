@@ -7,7 +7,7 @@
 import { argon2id } from "hash-wasm";
 import { concatBytes, fromBase64, toBase64, utf8Decode, utf8Encode } from "./encoding";
 
-const subtle = globalThis.crypto.subtle;
+const subtle = crypto.subtle;
 
 export const KdfType = { PBKDF2: 0, Argon2id: 1 } as const;
 
@@ -36,7 +36,7 @@ export function validateKdf(kdf: KdfParams): void {
     if (!inRange(kdf.parallelism, 1, 16)) throw new CryptoError(`Argon2 parallelism out of range: ${kdf.parallelism}`);
     return;
   }
-  throw new CryptoError(`Unsupported KDF type: ${(kdf as { type: unknown }).type}`);
+  throw new CryptoError(`Unsupported KDF type: ${String((kdf as { type: unknown }).type)}`);
 }
 
 /** Derives the 32-byte master key from the master password. */
@@ -99,7 +99,7 @@ export class SymmetricKey {
   }
 
   static async generate(): Promise<SymmetricKey> {
-    return SymmetricKey.fromBytes(globalThis.crypto.getRandomValues(new Uint8Array(64)));
+    return SymmetricKey.fromBytes(crypto.getRandomValues(new Uint8Array(64)));
   }
 
   /** Raw key material, for the opt-in "remember on this device" setting. */
@@ -175,7 +175,7 @@ export async function decryptString(value: string, key: SymmetricKey): Promise<s
 }
 
 export async function encryptBytes(plain: Uint8Array<ArrayBuffer>, key: SymmetricKey): Promise<string> {
-  const iv = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(16));
   const data = new Uint8Array(await subtle.encrypt({ name: "AES-CBC", iv }, key.encKey, plain));
   const mac = new Uint8Array(await subtle.sign("HMAC", key.macKey, concatBytes(iv, data)));
   return `2.${toBase64(iv)}|${toBase64(data)}|${toBase64(mac)}`;

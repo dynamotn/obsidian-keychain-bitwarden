@@ -110,7 +110,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
   }
 
   private loadDeviceState(): DeviceState {
-    const raw = this.app.loadLocalStorage(STATE_KEY);
+    const raw: unknown = this.app.loadLocalStorage(STATE_KEY);
     const state = parseDeviceState(raw);
     // Persist a fresh state immediately so the device id stays stable.
     if (!raw) this.app.saveLocalStorage(STATE_KEY, state);
@@ -159,7 +159,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
         new Notice(`Bitwarden: ${summarize(report)}`);
       }
       for (const err of report.errors) console.warn("[keychain-bitwarden]", err);
-      for (const s of report.skipped) console.info("[keychain-bitwarden] skipped", s.cipherId, s.reason);
+      for (const s of report.skipped) console.debug("[keychain-bitwarden] skipped", s.cipherId, s.reason);
       if (report.conflicts.length && this.settings.conflictPolicy === "ask" && verbose) this.openConflicts();
     } catch (e) {
       new Notice(`Bitwarden: ${(e as Error).message}`, 10_000);
@@ -215,12 +215,15 @@ class SettingsTab extends PluginSettingTab {
     new Setting(containerEl).setName("Account").setHeading();
     new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("https://vault.bitwarden.com, https://vault.bitwarden.eu, or your self-hosted server.")
+      .setDesc("Your Bitwarden server: the US or EU cloud, or a self-hosted one.")
       .addText((t) =>
-        t.setValue(p.settings.serverUrl).onChange(async (v) => {
-          p.settings.serverUrl = v.trim();
-          await p.saveSettings();
-        }),
+        t
+          .setPlaceholder("https://vault.bitwarden.com")
+          .setValue(p.settings.serverUrl)
+          .onChange(async (v) => {
+            p.settings.serverUrl = v.trim();
+            await p.saveSettings();
+          }),
       );
     new Setting(containerEl).setName("Email").addText((t) =>
       t.setValue(p.settings.email).onChange(async (v) => {
@@ -270,7 +273,7 @@ class SettingsTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("Sync interval (minutes)")
-      .setDesc("0 disables periodic sync. Sync also runs when Obsidian comes back to the foreground.")
+      .setDesc("Set to 0 to turn periodic sync off. Sync also runs when Obsidian comes back to the foreground.")
       .addText((t) =>
         t.setValue(String(p.settings.syncIntervalMinutes)).onChange(async (v) => {
           const n = Number.parseInt(v, 10);
@@ -307,7 +310,7 @@ class SettingsTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("Auto-lock after (minutes)")
-      .setDesc("0 keeps the vault unlocked until Obsidian closes.")
+      .setDesc("Set to 0 to stay unlocked until Obsidian closes.")
       .addText((t) =>
         t.setValue(String(p.settings.autoLockMinutes)).onChange(async (v) => {
           const n = Number.parseInt(v, 10);

@@ -132,7 +132,8 @@ The full threat model, the security review and its fixes are in
 
 ```sh
 npm install
-npm run build              # typecheck + production bundle (main.js)
+npm run lint               # eslint-plugin-obsidianmd, the rules of the community plugin review
+npm run build              # typecheck (TypeScript 7) + production bundle (main.js)
 npm run check:bundle       # bundle may only require "obsidian", no Node globals
 npm test                   # unit + multi-device sync tests (in-memory Bitwarden)
 npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (≈ Android)

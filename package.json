@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "description": "Obsidian plugin: sync SecretStorage with a Bitwarden folder",
   "scripts": {
-    "typecheck": "tsc -p .",
-    "build": "tsc -p . && node esbuild.config.mjs --production",
+    "typecheck": "node node_modules/typescript-native/bin/tsc -p .",
+    "build": "npm run typecheck && node esbuild.config.mjs --production",
     "dev": "node esbuild.config.mjs",
+    "lint": "eslint .",
     "test": "vitest run",
     "check:bundle": "node scripts/check-bundle.mjs",
     "test:browser": "vitest run -c vitest.browser.config.ts",

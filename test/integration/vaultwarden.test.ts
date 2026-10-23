@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { fetchHttpClient } from "../../src/bw/http";
+import { fetchHttpClient } from "../helpers/fetchHttp";
 import { KdfType } from "../../src/bw/crypto";
 import { makeDevice } from "../helpers/device";
 import { registerAccount, type TestAccount } from "./account";

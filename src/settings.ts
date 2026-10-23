@@ -25,7 +25,7 @@ const POLICIES: ConflictPolicy[] = ["ask", "prefer-remote", "prefer-local"];
 /** Accepts only well-typed values; anything else falls back to the default. */
 export function parseSettings(raw: unknown): PluginSettings {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const str = (k: keyof PluginSettings) => (typeof r[k] === "string" ? (r[k] as string) : (DEFAULT_SETTINGS[k] as string));
+  const str = (k: keyof PluginSettings) => (typeof r[k] === "string" ? r[k] : (DEFAULT_SETTINGS[k] as string));
   const int = (k: keyof PluginSettings, max: number) => {
     const v = r[k];
     return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= max ? v : (DEFAULT_SETTINGS[k] as number);

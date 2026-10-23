@@ -18,7 +18,7 @@ export class UnlockModal extends Modal {
       type: "password",
       attr: { autocomplete: "current-password", placeholder: "Master password", "aria-label": "Master password" },
     });
-    input.style.width = "100%";
+    input.setCssProps({ width: "100%" });
     const error = contentEl.createDiv({ cls: "mod-warning" });
     let busy = false;
     const submit = async () => {

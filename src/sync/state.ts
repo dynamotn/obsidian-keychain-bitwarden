@@ -18,7 +18,7 @@ export interface DeviceState {
 export function newDeviceState(): DeviceState {
   return {
     version: 1,
-    deviceId: globalThis.crypto.randomUUID(),
+    deviceId: crypto.randomUUID(),
     folderId: null,
     base: {},
     pendingCreates: [],

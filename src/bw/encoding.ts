@@ -5,7 +5,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 export function utf8Encode(text: string): Uint8Array<ArrayBuffer> {
-  return encoder.encode(text) as Uint8Array<ArrayBuffer>;
+  return encoder.encode(text);
 }
 
 export function utf8Decode(bytes: Uint8Array): string {
