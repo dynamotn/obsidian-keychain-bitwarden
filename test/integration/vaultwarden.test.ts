@@ -159,6 +159,33 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     }
   });
 
+  it.each(["xaes256gcm", "xchacha20poly1305"] as const)("syncs an account on the newer %s encryption", async (alg) => {
+    const v2 = await registerAccount(URL_!, { type: KdfType.PBKDF2, iterations: 600_000 }, alg);
+    const deviceOf = async () => {
+      const d = makeDevice(fetchHttpClient, v2, { serverUrl: URL_! });
+      await d.controller.unlock(v2.password);
+      return d;
+    };
+    const a = await deviceOf();
+    const b = await deviceOf();
+    a.store.set("v2-key", "written as COSE");
+    a.controller.queueUpload("v2-key", { kind: "global" });
+    expect((await a.controller.sync()).created).toEqual(["v2-key"]);
+    expect((await b.controller.sync()).pulled).toEqual(["v2-key"]);
+    expect(b.store.get("v2-key")).toBe("written as COSE");
+    b.store.set("v2-key", "edited on B");
+    expect((await b.controller.sync()).pushed).toEqual(["v2-key"]);
+    expect((await a.controller.sync()).pulled).toEqual(["v2-key"]);
+    expect(a.store.get("v2-key")).toBe("edited on B");
+    // What reached the server really is type 7.
+    const sync = (await (await fetch(`${URL_}/api/sync`, { headers: { Authorization: `Bearer ${v2.accessToken}` } })).json()) as {
+      ciphers: { notes: string; name: string }[];
+      folders: { name: string }[];
+    };
+    expect(sync.ciphers.every((c) => c.notes.startsWith("7.") && c.name.startsWith("7."))).toBe(true);
+    expect(sync.folders.every((f) => f.name.startsWith("7."))).toBe(true);
+  });
+
   it("works with an Argon2id account", async () => {
     const argon = await registerAccount(URL_!, { type: KdfType.Argon2id, iterations: 3, memory: 64, parallelism: 4 });
     const d = makeDevice(fetchHttpClient, argon, { serverUrl: URL_! });

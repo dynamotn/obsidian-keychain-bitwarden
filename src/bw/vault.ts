@@ -1,14 +1,14 @@
 // Maps Bitwarden items in one folder to Obsidian secrets, and back.
 
-import type { BitwardenApi, CipherDto, CipherRequest, FieldDto, SyncDto } from "./api";
+import { encryptedPrivateKeyOf, type BitwardenApi, type CipherDto, type CipherRequest, type FieldDto, type SyncDto } from "./api";
 import {
   AccountPrivateKey,
-  decryptBytes,
   decryptString,
   deriveMasterKey,
   encryptString,
   stretchMasterKey,
   SymmetricKey,
+  unwrapKey,
   type DeriveOptions,
 } from "./crypto";
 
@@ -64,25 +64,25 @@ export function scopeApplies(scope: Scope, vaultName: string, deviceId: string):
   return true;
 }
 
-/** Derives the user key from the master password and the account key in the sync response. */
+/**
+ * Derives the user key from the master password and the account key in the
+ * sync response. The KDF parameters are looked up by email; the master key's
+ * salt is usually the email too, but may differ (see `masterKeySaltOf`).
+ */
 export async function unlockUserKey(
   api: BitwardenApi,
   email: string,
   password: string,
   encryptedUserKey: string,
-  options: DeriveOptions = {},
+  options: DeriveOptions & { salt?: string } = {},
 ): Promise<SymmetricKey> {
   const kdf = await api.prelogin(email);
-  const masterKey = await deriveMasterKey(password, email, kdf, options);
+  const masterKey = await deriveMasterKey(password, options.salt ?? email, kdf, options);
   const stretched = await stretchMasterKey(masterKey);
   masterKey.fill(0);
   try {
-    const raw = await decryptBytes(encryptedUserKey, stretched);
-    try {
-      return await SymmetricKey.fromBytes(raw);
-    } finally {
-      raw.fill(0);
-    }
+    // A legacy 64-byte key, or a COSE key on accounts using the newer encryption.
+    return await unwrapKey(encryptedUserKey, stretched);
   } finally {
     stretched.wipe();
   }
@@ -117,8 +117,9 @@ export async function unlockOrganizationKeys(
   const problems: string[] = [];
   const orgs = (sync.profile.organizations ?? []).filter((o) => o.key && o.enabled !== false);
   if (orgs.length === 0) return { keys, problems };
-  if (!sync.profile.privateKey) return { keys, problems: ["the account has no private key to read organization keys"] };
-  const privateKey = await AccountPrivateKey.unwrap(sync.profile.privateKey, userKey);
+  const wrapped = encryptedPrivateKeyOf(sync);
+  if (!wrapped) return { keys, problems: ["the account has no private key to read organization keys"] };
+  const privateKey = await AccountPrivateKey.unwrap(wrapped, userKey);
   try {
     for (const org of orgs) {
       try {
@@ -148,13 +149,7 @@ export function ownerKeyFor(
 }
 
 async function itemKeyFor(cipher: CipherDto, ownerKey: SymmetricKey): Promise<SymmetricKey> {
-  if (!cipher.key) return ownerKey;
-  const raw = await decryptBytes(cipher.key, ownerKey);
-  try {
-    return await SymmetricKey.fromBytes(raw);
-  } finally {
-    raw.fill(0);
-  }
+  return cipher.key ? unwrapKey(cipher.key, ownerKey) : ownerKey;
 }
 
 async function decryptField(value: string | null | undefined, key: SymmetricKey): Promise<string | null> {

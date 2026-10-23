@@ -109,12 +109,37 @@ export interface SyncDto {
   profile: {
     id: string;
     email: string;
-    key: string;
+    /** The user key under the master key. Newer servers also send it in `userDecryption`. */
+    key?: string | null;
     privateKey?: string | null;
+    /** Newer servers: the account's key pairs, the private key wrapped with the user key. */
+    accountKeys?: { publicKeyEncryptionKeyPair?: { wrappedPrivateKey?: string | null } | null } | null;
     organizations?: OrganizationDto[] | null;
   };
+  /** Newer servers: how to unlock with the master password, including its salt. */
+  userDecryption?: {
+    masterPasswordUnlock?: { masterKeyEncryptedUserKey?: string | null; salt?: string | null } | null;
+  } | null;
   folders: FolderDto[];
   ciphers: CipherDto[];
+}
+
+/** The user key under the master key, wherever this server version puts it. */
+export function encryptedUserKeyOf(sync: SyncDto): string | null {
+  return sync.profile.key || sync.userDecryption?.masterPasswordUnlock?.masterKeyEncryptedUserKey || null;
+}
+
+/** The account's private key under the user key, wherever this server version puts it. */
+export function encryptedPrivateKeyOf(sync: SyncDto): string | null {
+  return sync.profile.privateKey || sync.profile.accountKeys?.publicKeyEncryptionKeyPair?.wrappedPrivateKey || null;
+}
+
+/**
+ * The salt of the master key. It is the email, except where the server says
+ * otherwise (for example an account that kept its salt when its email changed).
+ */
+export function masterKeySaltOf(sync: SyncDto, email: string): string {
+  return sync.userDecryption?.masterPasswordUnlock?.salt || email;
 }
 
 export interface CipherRequest {
@@ -272,7 +297,7 @@ export class BitwardenApi {
 
   async sync(): Promise<SyncDto> {
     const res = (await this.authed("GET", "/sync?excludeDomains=true")) as SyncDto;
-    if (!res?.profile?.key) throw new Error("Sync response has no account key");
+    if (!res?.profile || !encryptedUserKeyOf(res)) throw new Error("Sync response has no account key");
     res.folders ??= [];
     res.ciphers ??= [];
     this.userId = res.profile.id;

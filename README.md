@@ -50,6 +50,9 @@ flowchart LR
 - **Works with any Bitwarden server.** That includes bitwarden.com,
   bitwarden.eu and self-hosted Bitwarden or Vaultwarden. Tested against
   Vaultwarden, `rbw` and the official Bitwarden CLI.
+- **Ready for Bitwarden's newer encryption.** Accounts on the "v2" key
+  format (XAES-256-GCM or XChaCha20-Poly1305, stored as COSE) work like any
+  other, checked both ways against Bitwarden's own SDK.
 
 ## Quick start
 
@@ -127,9 +130,11 @@ running is never overwritten.
 - **The API key is tied to its server.** If you change the server URL, you
   have to enter the key again.
 - **Only authenticated encryption is accepted.** That means Bitwarden's
-  AES-CBC + HMAC (type 2), with the MAC checked first. KDF parameters from
-  the server are range-checked, so a server cannot weaken the KDF or set an
-  absurd cost.
+  AES-CBC + HMAC (type 2, the MAC checked first) and its COSE format
+  (type 7, XAES-256-GCM or XChaCha20-Poly1305). A COSE ciphertext must name
+  the key it was made for and say what it holds, so it cannot be passed off
+  as something else. KDF parameters from the server are range-checked, so a
+  server cannot weaken the KDF or set an absurd cost.
 - **Organization items are opt-in for a reason.** Their key reaches you
   encrypted to your public key, which the server knows. So a compromised
   server, like anyone in the organization, can create organization items in
@@ -149,8 +154,6 @@ The full threat model, the security review and its fixes are in
 
 ## Limitations
 
-- The newer COSE item encryption (type 7) is not supported. Such items are
-  skipped and left untouched.
 - On mobile, Obsidian has been reported to share secret storage across
   vaults
   ([forum](https://forum.obsidian.md/t/secretstorage-appears-to-be-shared-across-vaults-on-mobile-but-vault-scoped-on-desktop/117793)),
@@ -187,6 +190,15 @@ MessagePack of the notifications hub in `test/fixtures/msgpack.json` from
 ```sh
 uv run --no-project --with cryptography --with argon2-cffi python test/fixtures/gen_vectors.py
 uv run --no-project --with msgpack python test/fixtures/gen_msgpack.py
+```
+
+The vectors for Bitwarden's newer encryption, `test/fixtures/cose-vectors.json`,
+come from Bitwarden's own SDK, through the small Rust program in
+`test/fixtures/sdk-vectors`. With Rust installed, `npm run test:sdk` also has
+the SDK decrypt what the plugin encrypts. To regenerate the vectors:
+
+```sh
+cd test/fixtures/sdk-vectors && cargo run --release -- generate > ../cose-vectors.json
 ```
 
 To release, set the new version in `manifest.json`, `package.json`,

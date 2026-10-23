@@ -93,7 +93,8 @@ describe("SymmetricKey", () => {
   });
 
   it("rejects keys of the wrong size", async () => {
-    await expect(SymmetricKey.fromBytes(new Uint8Array(32))).rejects.toThrow(/64-byte/);
+    await expect(SymmetricKey.fromBytes(new Uint8Array(32))).rejects.toThrow(/key length/);
+    await expect(SymmetricKey.fromBytes(new Uint8Array(63))).rejects.toThrow(/key length/);
   });
 });
 

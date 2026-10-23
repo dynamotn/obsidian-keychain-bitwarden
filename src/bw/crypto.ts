@@ -1,11 +1,30 @@
 // Bitwarden client-side cryptography, implemented on WebCrypto plus a WASM
 // Argon2id so that it runs unchanged on every Obsidian platform.
 //
-// Only the "2" EncString type (AES-256-CBC with HMAC-SHA256, encrypt-then-MAC)
-// is accepted. Unauthenticated legacy types are refused on purpose.
+// Two kinds of symmetric keys exist, and each has its EncString type:
+// - legacy 64-byte AES-256-CBC + HMAC-SHA256 keys: type 2, encrypt-then-MAC;
+// - COSE keys (XAES-256-GCM or XChaCha20-Poly1305), which accounts on the
+//   newer "v2" encryption have: type 7, a COSE_Encrypt0 (see cose.ts).
+// A key only accepts its own type. Unauthenticated legacy types are refused.
 
 import { argon2InThread, KdfAbortedError, type Argon2Runner } from "./argon2";
+import {
+  coseDecrypt,
+  coseEncrypt,
+  encodeCoseKey,
+  generateCoseKey,
+  pad,
+  parseCoseKey,
+  unpad,
+  type ContentFormat,
+  type CoseAlgorithm,
+  type CoseKeyMaterial,
+} from "./cose";
+import { CryptoError } from "./crypto-error";
 import { concatBytes, fromBase64, toBase64, utf8Decode, utf8Encode } from "./encoding";
+
+export { CryptoError } from "./crypto-error";
+export type { ContentFormat } from "./cose";
 
 const subtle = crypto.subtle;
 
@@ -14,10 +33,6 @@ export const KdfType = { PBKDF2: 0, Argon2id: 1 } as const;
 export type KdfParams =
   | { type: typeof KdfType.PBKDF2; iterations: number }
   | { type: typeof KdfType.Argon2id; iterations: number; memory: number; parallelism: number };
-
-export class CryptoError extends Error {
-  override name = "CryptoError";
-}
 
 // Bounds follow the ranges the Bitwarden clients accept. The lower bounds stop
 // a hostile server from downgrading the KDF; the upper bounds stop it from
@@ -102,38 +117,96 @@ async function hkdfExpand32(prk: Uint8Array<ArrayBuffer>, info: string): Promise
   return hmacSign(prk, concatBytes(utf8Encode(info), new Uint8Array([1])));
 }
 
-/** A 64-byte Bitwarden symmetric key: 32 bytes AES key followed by 32 bytes HMAC key. */
+export type KeyAlgorithm = "aes256-cbc-hmac" | CoseAlgorithm;
+
+/** Legacy keys are exactly this long; COSE keys are padded to at least one byte more. */
+const LEGACY_KEY_SIZE = 64;
+
+/**
+ * A Bitwarden symmetric key: either a legacy 64-byte key (32 bytes AES key
+ * followed by 32 bytes HMAC key) or a COSE key with its id and permitted
+ * operations.
+ */
 export class SymmetricKey {
   private constructor(
+    readonly algorithm: KeyAlgorithm,
     private raw: Uint8Array<ArrayBuffer>,
-    readonly encKey: CryptoKey,
-    readonly macKey: CryptoKey,
+    private readonly legacy: { encKey: CryptoKey; macKey: CryptoKey } | null,
+    private readonly cose: CoseKeyMaterial | null,
   ) {}
 
+  /**
+   * Reads a key in Bitwarden's byte format: 64 bytes for a legacy key, more
+   * for a padded COSE key. Shorter (unauthenticated 32-byte) keys are refused.
+   */
   static async fromBytes(bytes: Uint8Array): Promise<SymmetricKey> {
-    if (bytes.length !== 64) throw new CryptoError(`Expected a 64-byte key, got ${bytes.length} bytes`);
-    const raw = new Uint8Array(bytes);
-    const encKey = await subtle.importKey("raw", raw.slice(0, 32), "AES-CBC", false, ["encrypt", "decrypt"]);
-    const macKey = await subtle.importKey("raw", raw.slice(32), { name: "HMAC", hash: "SHA-256" }, false, [
-      "sign",
-      "verify",
-    ]);
-    return new SymmetricKey(raw, encKey, macKey);
+    if (bytes.length === LEGACY_KEY_SIZE) {
+      const raw = new Uint8Array(bytes);
+      const encKey = await subtle.importKey("raw", raw.slice(0, 32), "AES-CBC", false, ["encrypt", "decrypt"]);
+      const macKey = await subtle.importKey("raw", raw.slice(32), { name: "HMAC", hash: "SHA-256" }, false, [
+        "sign",
+        "verify",
+      ]);
+      return new SymmetricKey("aes256-cbc-hmac", raw, { encKey, macKey }, null);
+    }
+    if (bytes.length > LEGACY_KEY_SIZE) return SymmetricKey.fromCoseKey(unpad(bytes));
+    throw new CryptoError(`Unsupported key length: ${bytes.length} bytes`);
   }
 
-  static async generate(): Promise<SymmetricKey> {
-    return SymmetricKey.fromBytes(crypto.getRandomValues(new Uint8Array(64)));
+  /** Reads an unpadded COSE_Key. */
+  static fromCoseKey(bytes: Uint8Array): SymmetricKey {
+    const material = parseCoseKey(bytes);
+    return new SymmetricKey(material.algorithm, material.key, null, material);
   }
 
-  /** Raw key material, for the opt-in "remember on this device" setting. */
+  /** A fresh key: legacy by default, which is still what item keys are. */
+  static async generate(algorithm: KeyAlgorithm = "aes256-cbc-hmac"): Promise<SymmetricKey> {
+    if (algorithm === "aes256-cbc-hmac") return SymmetricKey.fromBytes(crypto.getRandomValues(new Uint8Array(64)));
+    const material = generateCoseKey(algorithm);
+    return new SymmetricKey(algorithm, material.key, null, material);
+  }
+
+  get isCose(): boolean {
+    return this.cose !== null;
+  }
+
+  /** Bitwarden's byte format: the 64 raw bytes, or the padded COSE_Key. For "remember on this device". */
   exportBytes(): Uint8Array<ArrayBuffer> {
-    if (this.raw.length === 0) throw new CryptoError("Key has been wiped");
-    return new Uint8Array(this.raw);
+    this.ensureLive();
+    return this.cose ? pad(this.coseKeyBytes(), LEGACY_KEY_SIZE + 1) : new Uint8Array(this.raw);
+  }
+
+  /** The unpadded COSE_Key, for wrapping with another COSE key. */
+  coseKeyBytes(): Uint8Array<ArrayBuffer> {
+    this.ensureLive();
+    if (!this.cose) throw new CryptoError("Not a COSE key");
+    return encodeCoseKey(this.cose);
+  }
+
+  /** @internal Legacy key halves, for type 2. */
+  legacyKeys(): { encKey: CryptoKey; macKey: CryptoKey } {
+    this.ensureLive();
+    if (!this.legacy) throw new CryptoError("This data is in the legacy format, but the key is a COSE key");
+    return this.legacy;
+  }
+
+  /** @internal COSE key material, for type 7. */
+  coseMaterial(): CoseKeyMaterial {
+    this.ensureLive();
+    if (!this.cose) throw new CryptoError("This data is in the COSE format, but the key is a legacy key");
+    return this.cose;
   }
 
   /** A sub-key for purposes outside Bitwarden's own formats, domain-separated by `purpose`. */
   async deriveSubKey(purpose: string): Promise<Uint8Array<ArrayBuffer>> {
-    return hkdfExpand32(this.exportBytes().slice(32), `obsidian-keychain-bitwarden:${purpose}`);
+    this.ensureLive();
+    // Legacy keys use their MAC half; COSE keys have a single 32-byte key.
+    const prk = this.cose ? new Uint8Array(this.raw) : this.raw.slice(32);
+    return hkdfExpand32(prk, `obsidian-keychain-bitwarden:${purpose}`);
+  }
+
+  private ensureLive() {
+    if (this.raw.length === 0) throw new CryptoError("Key has been wiped");
   }
 
   /** Best-effort zeroing; the CryptoKey objects are non-extractable and are dropped with this object. */
@@ -156,17 +229,13 @@ interface ParsedEncString {
   mac: Uint8Array<ArrayBuffer>;
 }
 
-function parseEncString(value: string): ParsedEncString {
+function encStringType(value: string): { type: string; body: string } {
   const dot = value.indexOf(".");
-  const type = dot > 0 ? value.slice(0, dot) : "";
-  if (type !== "2") {
-    throw new CryptoError(
-      type === "7"
-        ? "This vault uses the newer COSE encryption format, which is not supported yet"
-        : `Unsupported or unauthenticated encryption type "${type || "?"}"`,
-    );
-  }
-  const parts = value.slice(dot + 1).split("|");
+  return { type: dot > 0 ? value.slice(0, dot) : "", body: value.slice(dot + 1) };
+}
+
+function parseType2(body: string): ParsedEncString {
+  const parts = body.split("|");
   if (parts.length !== 3) throw new CryptoError("Malformed encrypted string");
   let iv: Uint8Array<ArrayBuffer>, data: Uint8Array<ArrayBuffer>, mac: Uint8Array<ArrayBuffer>;
   try {
@@ -180,32 +249,94 @@ function parseEncString(value: string): ParsedEncString {
   return { iv, data, mac };
 }
 
-export async function decryptBytes(value: string, key: SymmetricKey): Promise<Uint8Array<ArrayBuffer>> {
-  const { iv, data, mac } = parseEncString(value);
+async function decryptType2(body: string, key: SymmetricKey): Promise<Uint8Array<ArrayBuffer>> {
+  const { encKey, macKey } = key.legacyKeys();
+  const { iv, data, mac } = parseType2(body);
   // subtle.verify compares in constant time; decrypting only after it passes
   // keeps the CBC padding oracle out of reach.
-  const ok = await subtle.verify("HMAC", key.macKey, mac, concatBytes(iv, data));
+  const ok = await subtle.verify("HMAC", macKey, mac, concatBytes(iv, data));
   if (!ok) throw new CryptoError("MAC verification failed (wrong password or tampered data)");
   try {
-    return new Uint8Array(await subtle.decrypt({ name: "AES-CBC", iv }, key.encKey, data));
+    return new Uint8Array(await subtle.decrypt({ name: "AES-CBC", iv }, encKey, data));
   } catch {
     throw new CryptoError("Decryption failed");
   }
 }
 
-export async function decryptString(value: string, key: SymmetricKey): Promise<string> {
-  return utf8Decode(await decryptBytes(value, key));
+/**
+ * Decrypts an EncString. Type 7 messages declare what they hold; `expected`
+ * lists what the caller accepts there (type 2 carries no such information).
+ */
+async function decryptAs(
+  value: string,
+  key: SymmetricKey,
+  expected: readonly ContentFormat[],
+): Promise<{ plaintext: Uint8Array<ArrayBuffer>; format: ContentFormat | null }> {
+  const { type, body } = encStringType(value);
+  if (type === "2") return { plaintext: await decryptType2(body, key), format: null };
+  if (type === "7") {
+    let message: Uint8Array<ArrayBuffer>;
+    try {
+      message = fromBase64(body);
+    } catch {
+      throw new CryptoError("Malformed encrypted string");
+    }
+    return coseDecrypt(key.coseMaterial(), message, expected);
+  }
+  throw new CryptoError(`Unsupported or unauthenticated encryption type "${type || "?"}"`);
 }
 
-export async function encryptBytes(plain: Uint8Array<ArrayBuffer>, key: SymmetricKey): Promise<string> {
+/** Decrypts binary data (type 7: octet-stream). */
+export async function decryptBytes(value: string, key: SymmetricKey): Promise<Uint8Array<ArrayBuffer>> {
+  return (await decryptAs(value, key, ["octet-stream"])).plaintext;
+}
+
+export async function decryptString(value: string, key: SymmetricKey): Promise<string> {
+  return utf8Decode((await decryptAs(value, key, ["utf8"])).plaintext);
+}
+
+/** Decrypts a key wrapped with another key, such as an item key or the user key. */
+export async function unwrapKey(value: string, wrappingKey: SymmetricKey): Promise<SymmetricKey> {
+  const { plaintext, format } = await decryptAs(value, wrappingKey, ["legacy-key", "cose-key"]);
+  try {
+    return format === "cose-key" ? SymmetricKey.fromCoseKey(plaintext) : await SymmetricKey.fromBytes(plaintext);
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+async function encryptType2(plain: Uint8Array<ArrayBuffer>, key: SymmetricKey): Promise<string> {
+  const { encKey, macKey } = key.legacyKeys();
   const iv = crypto.getRandomValues(new Uint8Array(16));
-  const data = new Uint8Array(await subtle.encrypt({ name: "AES-CBC", iv }, key.encKey, plain));
-  const mac = new Uint8Array(await subtle.sign("HMAC", key.macKey, concatBytes(iv, data)));
+  const data = new Uint8Array(await subtle.encrypt({ name: "AES-CBC", iv }, encKey, plain));
+  const mac = new Uint8Array(await subtle.sign("HMAC", macKey, concatBytes(iv, data)));
   return `2.${toBase64(iv)}|${toBase64(data)}|${toBase64(mac)}`;
 }
 
+/** Encrypts with the key's own EncString type; `format` labels type 7 content. */
+export async function encryptBytes(
+  plain: Uint8Array<ArrayBuffer>,
+  key: SymmetricKey,
+  format: ContentFormat = "octet-stream",
+): Promise<string> {
+  if (!key.isCose) return encryptType2(plain, key);
+  return `7.${toBase64(await coseEncrypt(key.coseMaterial(), plain, format))}`;
+}
+
 export async function encryptString(plain: string, key: SymmetricKey): Promise<string> {
-  return encryptBytes(utf8Encode(plain), key);
+  return encryptBytes(utf8Encode(plain), key, "utf8");
+}
+
+/**
+ * Wraps a key with another, as the SDK does: a legacy wrapping key encrypts
+ * the key's byte format; a COSE wrapping key encrypts it unpadded and says
+ * in the content format whether it is a legacy or a COSE key.
+ */
+export async function wrapKey(key: SymmetricKey, wrappingKey: SymmetricKey): Promise<string> {
+  if (!wrappingKey.isCose) return encryptType2(key.exportBytes(), wrappingKey);
+  return key.isCose
+    ? encryptBytes(key.coseKeyBytes(), wrappingKey, "cose-key")
+    : encryptBytes(key.exportBytes(), wrappingKey, "legacy-key");
 }
 
 /**
@@ -218,7 +349,7 @@ export class AccountPrivateKey {
 
   /** Decrypts `profile.privateKey` (a PKCS#8 key under the user key). */
   static async unwrap(encrypted: string, userKey: SymmetricKey): Promise<AccountPrivateKey> {
-    return new AccountPrivateKey(await decryptBytes(encrypted, userKey));
+    return new AccountPrivateKey((await decryptAs(encrypted, userKey, ["pkcs8"])).plaintext);
   }
 
   async decrypt(value: string): Promise<Uint8Array<ArrayBuffer>> {

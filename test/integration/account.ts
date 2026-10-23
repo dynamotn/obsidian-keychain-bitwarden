@@ -2,7 +2,7 @@
 // API key, using the same client-side crypto a real client would.
 
 import {
-  decryptBytes,
+  decryptString,
   deriveMasterKey,
   encryptBytes,
   encryptString,
@@ -10,7 +10,10 @@ import {
   KdfType,
   stretchMasterKey,
   SymmetricKey,
+  unwrapKey,
+  wrapKey,
   type KdfParams,
+  type KeyAlgorithm,
 } from "../../src/bw/crypto";
 import { fromBase64, toBase64 } from "../../src/bw/encoding";
 
@@ -36,12 +39,14 @@ async function post(url: string, body: string, headers: Record<string, string>) 
 export async function registerAccount(
   serverUrl: string,
   kdf: KdfParams = { type: KdfType.PBKDF2, iterations: 600_000 },
+  /** A COSE algorithm makes an account on the newer ("v2") encryption. */
+  userKeyAlgorithm: KeyAlgorithm = "aes256-cbc-hmac",
 ): Promise<TestAccount> {
   const email = `it-${crypto.randomUUID().slice(0, 8)}@example.com`;
   const password = `pw ${crypto.randomUUID()} ✓`;
   const masterKey = await deriveMasterKey(password, email, kdf);
   const stretched = await stretchMasterKey(masterKey);
-  const userKey = await SymmetricKey.generate();
+  const userKey = await SymmetricKey.generate(userKeyAlgorithm);
   const hash = await hashMasterPassword(masterKey, password);
 
   const rsa = await crypto.subtle.generateKey(
@@ -50,7 +55,7 @@ export async function registerAccount(
     ["encrypt", "decrypt"],
   );
   const publicKey = toBase64(new Uint8Array(await crypto.subtle.exportKey("spki", rsa.publicKey)));
-  const privateKey = await encryptBytes(new Uint8Array(await crypto.subtle.exportKey("pkcs8", rsa.privateKey)), userKey);
+  const privateKey = await encryptBytes(new Uint8Array(await crypto.subtle.exportKey("pkcs8", rsa.privateKey)), userKey, "pkcs8");
 
   const kdfFields =
     kdf.type === KdfType.Argon2id
@@ -72,7 +77,7 @@ export async function registerAccount(
       emailVerificationToken,
       masterPasswordHash: hash,
       masterPasswordHint: null,
-      userSymmetricKey: await encryptBytes(userKey.exportBytes(), stretched),
+      userSymmetricKey: await wrapKey(userKey, stretched),
       userAsymmetricKeys: { publicKey, encryptedPrivateKey: privateKey },
       ...kdfFields,
     }),
@@ -147,7 +152,7 @@ export async function createOrganization(serverUrl: string, account: TestAccount
     collectionName: await encryptString("Default collection", key),
     keys: {
       publicKey: toBase64(new Uint8Array(await crypto.subtle.exportKey("spki", orgRsa.publicKey))),
-      encryptedPrivateKey: await encryptBytes(new Uint8Array(await crypto.subtle.exportKey("pkcs8", orgRsa.privateKey)), key),
+      encryptedPrivateKey: await encryptBytes(new Uint8Array(await crypto.subtle.exportKey("pkcs8", orgRsa.privateKey)), key, "pkcs8"),
     },
   });
   const collections = await api(account, serverUrl, "GET", `/organizations/${org.id}/collections`);
@@ -195,6 +200,6 @@ export async function readOrganizationNote(
   cipherId: string,
 ): Promise<{ organizationId: string | null; notes: string }> {
   const c = await api(account, serverUrl, "GET", `/ciphers/${cipherId}`);
-  const key = c.key ? await SymmetricKey.fromBytes(await decryptBytes(c.key, org.key)) : org.key;
-  return { organizationId: c.organizationId, notes: new TextDecoder().decode(await decryptBytes(c.notes, key)) };
+  const key = c.key ? await unwrapKey(c.key, org.key) : org.key;
+  return { organizationId: c.organizationId, notes: await decryptString(c.notes, key) };
 }

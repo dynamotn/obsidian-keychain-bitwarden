@@ -4,19 +4,24 @@
 
 import type { CipherDto, CipherRequest, FolderDto, OrganizationDto } from "../../src/bw/api";
 import {
-  decryptBytes,
   deriveMasterKey,
   encryptBytes,
   encryptString,
   KdfType,
   stretchMasterKey,
   SymmetricKey,
+  unwrapKey,
+  wrapKey,
   type KdfParams,
+  type KeyAlgorithm,
 } from "../../src/bw/crypto";
-import { toBase64 } from "../../src/bw/encoding";
+import { toBase64, utf8Encode } from "../../src/bw/encoding";
 import type { HttpClient, HttpRequest } from "../../src/bw/http";
 
 export const SERVER = "https://bw.test";
+
+/** Legacy account keys, and both kinds of COSE ("v2") account keys Bitwarden creates. */
+export const ACCOUNT_KINDS = ["aes256-cbc-hmac", "xaes256gcm", "xchacha20poly1305"] as const satisfies readonly KeyAlgorithm[];
 
 export interface Account {
   email: string;
@@ -45,20 +50,35 @@ export class FakeBitwardenServer {
     private readonly kdf: KdfParams,
     private readonly protectedKey: string,
     private privateKey: string,
+    private readonly shape: { newSyncShape: boolean; salt?: string } = { newSyncShape: false },
   ) {}
 
-  static async create(kdf: KdfParams = { type: KdfType.PBKDF2, iterations: 5000 }): Promise<FakeBitwardenServer> {
+  /**
+   * `userKey` picks the account's encryption: legacy keys, or a COSE ("v2")
+   * account key. `newSyncShape` answers sync like newer servers do, with the
+   * keys in `userDecryption` and `accountKeys` only, and `salt` gives the
+   * master key a salt other than the email.
+   */
+  static async create(
+    kdf: KdfParams = { type: KdfType.PBKDF2, iterations: 5000 },
+    {
+      userKey: userKeyAlgorithm = "aes256-cbc-hmac",
+      newSyncShape = false,
+      salt,
+    }: { userKey?: KeyAlgorithm; newSyncShape?: boolean; salt?: string } = {},
+  ): Promise<FakeBitwardenServer> {
     const email = "user@example.com";
     const password = "master password";
-    const userKey = await SymmetricKey.generate();
-    const stretched = await stretchMasterKey(await deriveMasterKey(password, email, kdf));
-    const protectedKey = await encryptBytes(userKey.exportBytes(), stretched);
-    const privateKey = await encryptString("not really a private key", userKey);
+    const userKey = await SymmetricKey.generate(userKeyAlgorithm);
+    const stretched = await stretchMasterKey(await deriveMasterKey(password, salt ?? email, kdf));
+    const protectedKey = await wrapKey(userKey, stretched);
+    const privateKey = await encryptBytes(utf8Encode("not really a private key"), userKey, "pkcs8");
     return new FakeBitwardenServer(
       { email, password, clientId: "user.1234", clientSecret: "s3cret", userKey },
       kdf,
       protectedKey,
       privateKey,
+      { newSyncShape, salt },
     );
   }
 
@@ -80,7 +100,7 @@ export class FakeBitwardenServer {
         ["encrypt", "decrypt"],
       );
       const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", this.rsa.privateKey));
-      this.privateKey = await encryptBytes(pkcs8, this.account.userKey);
+      this.privateKey = await encryptBytes(pkcs8, this.account.userKey, "pkcs8");
     }
     const id = `org-${this.organizations.length + 1}`;
     const orgKey = await SymmetricKey.generate();
@@ -120,7 +140,7 @@ export class FakeBitwardenServer {
     let wrappedKey: string | null = null;
     if (opts.itemKey) {
       key = await SymmetricKey.generate();
-      wrappedKey = await encryptBytes(key.exportBytes(), ownerKey);
+      wrappedKey = await wrapKey(key, ownerKey);
     }
     const fields = [];
     if (opts.id) fields.push({ type: 0, name: await encryptString("obsidian-id", key), value: await encryptString(opts.id, key) });
@@ -158,7 +178,7 @@ export class FakeBitwardenServer {
   async editValue(cipherId: string, value: string): Promise<void> {
     const c = this.ciphers.find((x) => x.id === cipherId)!;
     let key = await this.ownerKey(c);
-    if (c.key) key = await SymmetricKey.fromBytes(await decryptBytes(c.key, key));
+    if (c.key) key = await unwrapKey(c.key, key);
     const enc = await encryptString(value, key);
     if (c.type === 1) c.login = { ...c.login, password: enc };
     else c.notes = enc;
@@ -204,13 +224,27 @@ export class FakeBitwardenServer {
 
     if (path === "/api/sync" && req.method === "GET") {
       return json(200, {
-        profile: {
-          id: "u1",
-          email: this.account.email,
-          key: this.protectedKey,
-          privateKey: this.privateKey,
-          organizations: this.organizations,
-        },
+        profile: this.shape.newSyncShape
+          ? {
+              id: "u1",
+              email: this.account.email,
+              accountKeys: { publicKeyEncryptionKeyPair: { wrappedPrivateKey: this.privateKey } },
+              organizations: this.organizations,
+            }
+          : {
+              id: "u1",
+              email: this.account.email,
+              key: this.protectedKey,
+              privateKey: this.privateKey,
+              organizations: this.organizations,
+            },
+        ...(this.shape.newSyncShape
+          ? {
+              userDecryption: {
+                masterPasswordUnlock: { masterKeyEncryptedUserKey: this.protectedKey, salt: this.shape.salt ?? this.account.email },
+              },
+            }
+          : {}),
         folders: this.folders,
         ciphers: this.ciphers,
       });

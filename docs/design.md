@@ -6,9 +6,10 @@ way it is, and how it was verified. The user-facing summary is in
 
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
-- Runtime dependency: `hash-wasm` (Argon2id). Everything else is WebCrypto,
-  Web Workers, WebSocket and the Obsidian API.
-- Bundle: one 103.6 KiB `main.js` (production build), with the Argon2
+- Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
+  (XChaCha20-Poly1305). Everything else is WebCrypto, Web Workers, WebSocket
+  and the Obsidian API.
+- Bundle: one 123.6 KiB `main.js` (production build), with the Argon2
   worker embedded in it. Its only import is `obsidian`.
 
 ## Contents
@@ -105,7 +106,8 @@ flowchart LR
 | Module | Responsibility | Depends on `obsidian`? |
 |---|---|---|
 | `src/bw/encoding.ts` | base64 and UTF-8 without `Buffer` | no |
-| `src/bw/crypto.ts` | PBKDF2/Argon2id, HKDF-Expand, `SymmetricKey`, EncString type 2, RSA-OAEP organization keys, `ValueFingerprinter` | no |
+| `src/bw/crypto.ts` | PBKDF2/Argon2id, HKDF-Expand, `SymmetricKey` (legacy and COSE), EncString types 2 and 7, key wrapping, RSA-OAEP organization keys, `ValueFingerprinter` | no |
+| `src/bw/cose.ts`, `src/bw/cbor.ts`, `src/bw/aead.ts` | COSE_Key and COSE_Encrypt0 as the SDK defines them; a bounded CBOR codec; XAES-256-GCM (WebCrypto) and XChaCha20-Poly1305 (`@noble/ciphers`) | no |
 | `src/bw/argon2.ts`, `src/bw/argon2.worker.ts` | Argon2id runners: in a Worker (cancellable, with a timeout) or on the calling thread | no |
 | `src/bw/msgpack.ts` | Bounds-checked MessagePack decoder and SignalR framing | no |
 | `src/bw/notifications.ts` | Notifications hub client: handshake, pings, reconnect, coalescing | no |
@@ -222,10 +224,12 @@ in a **Web Worker**:
 
 ### Ciphertexts (`crypto.ts`)
 
-- Only **EncString type 2** is accepted: AES-256-CBC + HMAC-SHA256,
-  encrypt-then-MAC, in the format `2.iv|ct|mac`.
+- Two authenticated EncString types are accepted, each only with its own
+  kind of key:
+  - **Type 2**: AES-256-CBC + HMAC-SHA256, encrypt-then-MAC, in the format
+    `2.iv|ct|mac`, with a legacy 64-byte key.
+  - **Type 7**: a COSE_Encrypt0, with a COSE key (see below).
   - Types 0 and 1 (unauthenticated) are refused.
-  - Type 7 (COSE) is refused with a dedicated message.
   - For organization keys only RSA-OAEP types 3 and 4 are accepted; the
     RSA+HMAC types 5 and 6 are refused.
 - The parser checks that the IV is 16 bytes, the MAC 32 bytes and the
@@ -241,6 +245,37 @@ in a **Web Worker**:
 - Keys are imported as non-extractable CryptoKeys. The raw copy is kept
   only to support "remember on this device", and it is zeroed on wipe
   (best effort: JavaScript strings cannot be wiped).
+
+### The newer ("v2") encryption: COSE keys and EncString type 7
+
+Accounts created or upgraded on Bitwarden's newer encryption have a COSE
+user key. Everything follows Bitwarden's SDK (`bitwarden-crypto`):
+
+- **Keys**: a symmetric COSE_Key (`kty` 4) with a 16-byte `kid`, `key_ops`,
+  a 32-byte `k`, and `alg` -70010 (XAES-256-GCM, what new accounts get) or
+  -70000 (XChaCha20-Poly1305). In Bitwarden's byte format a key of exactly
+  64 bytes is a legacy key; a longer one is a COSE_Key padded to at least
+  65 bytes (the last N bytes hold N). Shorter keys are refused.
+- **User key**: still wrapped with the stretched master key as type 2; the
+  plaintext is the padded COSE_Key.
+- **Type 7** is `7.` + base64 of an untagged COSE_Encrypt0: a protected
+  header with `alg`, `kid` and a content type; the 24-byte nonce in the
+  unprotected `iv`; the ciphertext with its 16-byte tag. The associated data
+  is the COSE `Enc_structure` over the exact protected header bytes.
+- **Checks on decryption**: `alg` must be the key's, `kid` must be the
+  key's, `crit` is refused, and the content type must be what the caller
+  expects: `utf8` (padded to 32-byte blocks) for strings, `legacy-key` or
+  `cose-key` for wrapped keys, `pkcs8` for the private key. A string cannot
+  be read as a key or the other way around. `key_ops` is honoured.
+- **Item keys** are still legacy 64-byte keys; wrapped with a COSE user key
+  they are type 7 with content type `legacy-key`, and the item's fields
+  remain type 2.
+- **Encryption** uses the key's own type, so edits and uploads on a v2
+  account are type 7, with the same headers and padding as the SDK.
+- **Newer sync responses** carry the user key in
+  `userDecryption.masterPasswordUnlock` together with the master key's
+  **salt**, which may differ from the email, and the private key in
+  `profile.accountKeys`. Both shapes are read; the salt is used when given.
 
 ### Value fingerprints
 
@@ -480,7 +515,10 @@ Static analysis:
     folder. They cannot replace a personal item's secret (personal items
     win), but they can set or change secrets that only exist as
     organization items. Hence the opt-in and the settings text;
-  - send notifications at will, which only cause coalesced extra syncs.
+  - send notifications at will, which only cause coalesced extra syncs;
+  - on a v2 account, serve an older user key from before a key rotation:
+    the plugin does not check the signed "security state" the SDK uses
+    against such downgrades.
 - **Redirects**: `requestUrl` gives no control over redirects. A 307/308 to
   another host could carry the token request body. (The companion `bwss`
   Secret Service daemon, which lives in a separate repository, disables
@@ -492,9 +530,10 @@ Static analysis:
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden) | `npm test` | **175 passed**, 2 skipped (the real-worker tests, which need a browser) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **354 passed** (177 × 2) |
-| Real server + independent clients | `npm run test:integration` | **9 passed** |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **306 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **616 passed** (308 × 2) |
+| Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
+| Real server + independent clients | `npm run test:integration` | **11 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
 | Bundle portability gate | `npm run check:bundle` | only `obsidian` is required, no Node globals |
 
@@ -514,6 +553,18 @@ password hash, a protected user key, and EncStrings of edge-case plaintexts
 TypeScript code must reproduce them exactly. The companion Rust `bwss`
 daemon uses the same vectors.
 
+`test/fixtures/cose-vectors.json` comes from **Bitwarden's own SDK**
+(`bitwarden-crypto`, pinned revision), through the Rust program in
+`test/fixtures/sdk-vectors`. For an XAES-256-GCM and an XChaCha20-Poly1305
+account it records the COSE user key, the user key wrapped with the master
+key, strings of edge-case lengths, a legacy and a COSE item key wrapped with
+the user key plus a value under each, and the wrapped private key. The
+plugin must unlock the account with the password, decrypt everything, and
+encode COSE keys byte for byte like the SDK. In the other direction,
+`npm run test:sdk` feeds the plugin's own type 7 ciphertexts to the SDK,
+which must decrypt them. XAES-256-GCM is also checked against the C2SP
+test vectors.
+
 ### 10.2 Simulated Bitwarden
 
 `test/helpers/fakeServer.ts` is an in-memory server that behaves like the
@@ -525,7 +576,9 @@ real one where it matters:
 - the `encryptedFor` requirement;
 - PascalCase responses, which exercise key normalisation.
 
-Tests run two or more "devices" against it, covering:
+The sync, organization and newer-sync-shape suites run three times: with a
+legacy account key, and with XAES-256-GCM and XChaCha20-Poly1305 account
+keys. Tests run two or more "devices" against it, covering:
 
 - upload on A, delivery to B, edit on B, delivery back to A;
 - idempotence, and uploading only what was explicitly queued;
@@ -571,6 +624,12 @@ The setup:
   device B's edit; Vaultwarden rejects it, and the plugin re-plans and
   reports the conflict.
 - An **Argon2id account** unlocks and uploads.
+- Accounts on the **newer encryption** (XAES-256-GCM and XChaCha20-Poly1305
+  user keys): two devices upload, pull and edit, and everything the server
+  stores (item names, notes, folder names) is type 7. The official CLI
+  cannot be used here: it refuses these test accounts, which lack the
+  signing keys a real v2 account also has; the SDK check above covers the
+  format instead.
 - An **organization**, created the way the web vault creates one, with an
   item filed in the account's folder: the plugin pulls it, pushes an edit
   encrypted with the organization key, and the item stays in its
@@ -607,6 +666,7 @@ Android. It has no Node.js. The plugin relies only on:
 | `crypto.subtle` (PBKDF2, HKDF via HMAC, AES-CBC, HMAC) | all crypto | secure context, which Obsidian provides |
 | `crypto.getRandomValues`, `crypto.randomUUID` | IVs, device id | `randomUUID`: iOS 15.4+, Chromium 92+ |
 | `WebAssembly` | Argon2id (`hash-wasm`) | 16–1024 MiB linear memory |
+| `crypto.subtle` AES-GCM, AES-CBC | XAES-256-GCM (one AES block = the first block of AES-CBC with a zero IV) | XChaCha20-Poly1305 is pure JavaScript (`@noble/ciphers`) |
 | `Worker`, `Blob`, `URL.createObjectURL` | Argon2id off the main thread | falls back to the main thread when unavailable |
 | `WebSocket` | live updates | the connection drops in the background on mobile; it is reopened on resume |
 | `TextEncoder`/`TextDecoder`, `atob`/`btoa` | encoding | no `Buffer` |
@@ -645,9 +705,6 @@ budgets catch order-of-magnitude regressions, not noise.
 
 ## 13. Limitations and future work
 
-- **Unsupported item formats**: COSE (type 7) items are skipped and held,
-  never cleared. Supporting them needs XChaCha20-Poly1305 and COSE parsing,
-  and independent test vectors, which do not exist yet.
 - **Mobile vault isolation**: if mobile SecretStorage is indeed app-wide, a
   `vault:` scope cannot isolate secrets between vaults there. That is
   Obsidian's behaviour; the plugin cannot change it.

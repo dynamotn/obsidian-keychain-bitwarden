@@ -1,9 +1,16 @@
 // Ties the API, the keys and the sync engine together. Has no dependency on
 // the obsidian module, so it is exercised directly by the integration tests.
 
-import { BitwardenApi, resolveServerUrls, type ApiCredentials } from "./bw/api";
+import {
+  BitwardenApi,
+  encryptedPrivateKeyOf,
+  encryptedUserKeyOf,
+  masterKeySaltOf,
+  resolveServerUrls,
+  type ApiCredentials,
+} from "./bw/api";
 import { KdfAbortedError, type Argon2Runner } from "./bw/argon2";
-import { decryptBytes, SymmetricKey } from "./bw/crypto";
+import { AccountPrivateKey, SymmetricKey } from "./bw/crypto";
 import { fromBase64, toBase64 } from "./bw/encoding";
 import type { HttpClient } from "./bw/http";
 import { formatScope, SECRET_ID_PATTERN, unlockUserKey, type Scope } from "./bw/vault";
@@ -134,9 +141,10 @@ export class SecretsController {
       const api = await this.session();
       const sync = await api.sync();
       if (abort.signal.aborted) throw new KdfAbortedError();
-      const key = await unlockUserKey(api, email, password, sync.profile.key, {
+      const key = await unlockUserKey(api, email, password, encryptedUserKeyOf(sync)!, {
         argon2: this.deps.argon2,
         signal: abort.signal,
+        salt: masterKeySaltOf(sync, email),
       });
       // A lock that arrived while the key was being derived wins.
       if (abort.signal.aborted || generation !== this.generation) {
@@ -171,9 +179,10 @@ export class SecretsController {
     // writes under a wrong key.
     const sync = await (await this.session()).sync();
     let valid = false;
-    if (sync.profile.privateKey) {
+    const wrappedPrivateKey = encryptedPrivateKeyOf(sync);
+    if (wrappedPrivateKey) {
       try {
-        await decryptBytes(sync.profile.privateKey, key);
+        (await AccountPrivateKey.unwrap(wrappedPrivateKey, key)).wipe();
         valid = true;
       } catch {
         valid = false;
