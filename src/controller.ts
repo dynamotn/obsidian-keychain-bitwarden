@@ -296,6 +296,12 @@ export class SecretsController {
     this.save();
   }
 
+  /** The notifications hub URL with a fresh token; fails while locked. */
+  async notificationsHubUrl(): Promise<string> {
+    if (!this.userKey) throw new Error("Bitwarden is locked");
+    return (await this.session()).notificationsHubUrl();
+  }
+
   deviceId(): string {
     return this.state().deviceId;
   }

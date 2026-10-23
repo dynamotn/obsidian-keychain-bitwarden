@@ -5,7 +5,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import obsidianmd from "eslint-plugin-obsidianmd";
 
 export default defineConfig([
-  globalIgnores([".worktrees/", "main.js", "node_modules/", "coverage/", "test/", "scripts/", "*.config.*"]),
+  globalIgnores([".worktrees/", ".scratch/", "main.js", "node_modules/", "coverage/", "test/", "scripts/", "*.config.*"]),
   ...obsidianmd.configs.recommended,
   {
     files: ["src/**/*.ts"],

@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fetchHttpClient } from "../helpers/fetchHttp";
 import { KdfType } from "../../src/bw/crypto";
-import { makeDevice } from "../helpers/device";
+import { NotificationHub, type SocketLike } from "../../src/bw/notifications";
+import { makeDevice, type TestDevice } from "../helpers/device";
 import {
   createFolder,
   createOrganization,
@@ -118,6 +119,44 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       organizationId: org.id,
       notes: "edited in Obsidian",
     });
+  });
+
+  it("hears about a change made on another device through the notifications hub", async () => {
+    const a = await device();
+    const b = await device();
+    const heard: string[] = [];
+    const hubFor = (name: string, d: TestDevice) =>
+      new NotificationHub({
+        url: () => d.controller.notificationsHubUrl(),
+        createSocket: (u) => new WebSocket(u) as unknown as SocketLike,
+        deviceId: () => d.controller.deviceId(),
+        onChange: () => heard.push(name),
+        timers: { set: (fn, ms) => setTimeout(fn, ms) as unknown as number, clear: (id) => clearTimeout(id) },
+        settleMs: 100,
+        minIntervalMs: 0,
+      });
+    const until = async (cond: () => boolean, what: string) => {
+      for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 50));
+      if (!cond()) throw new Error(`timed out waiting for ${what}`);
+    };
+    const hubA = hubFor("a", a);
+    const hubB = hubFor("b", b);
+    try {
+      hubA.start();
+      hubB.start();
+      await until(() => hubA.connected && hubB.connected, "both hubs to connect");
+      b.store.set("live-key", "pushed live");
+      b.controller.queueUpload("live-key", { kind: "global" });
+      await b.controller.sync();
+      await until(() => heard.includes("a"), "device A to hear about the change");
+      // Give B's hub the same time: its own change must not come back to it.
+      await new Promise((r) => setTimeout(r, 1_000));
+      expect(heard.filter((h) => h === "b")).toEqual([]);
+      expect((await a.controller.sync()).pulled).toContain("live-key");
+    } finally {
+      hubA.stop();
+      hubB.stop();
+    }
   });
 
   it("works with an Argon2id account", async () => {

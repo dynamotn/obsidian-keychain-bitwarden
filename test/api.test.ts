@@ -5,14 +5,20 @@ import { parseDeviceState } from "../src/sync/state";
 
 describe("resolveServerUrls", () => {
   it("maps the Bitwarden clouds and self-hosted servers", () => {
-    expect(resolveServerUrls("")).toEqual({ api: "https://api.bitwarden.com", identity: "https://identity.bitwarden.com" });
+    expect(resolveServerUrls("")).toEqual({
+      api: "https://api.bitwarden.com",
+      identity: "https://identity.bitwarden.com",
+      notifications: "https://notifications.bitwarden.com",
+    });
     expect(resolveServerUrls("https://vault.bitwarden.eu")).toEqual({
       api: "https://api.bitwarden.eu",
       identity: "https://identity.bitwarden.eu",
+      notifications: "https://notifications.bitwarden.eu",
     });
     expect(resolveServerUrls("https://bw.example.org/vault/")).toEqual({
       api: "https://bw.example.org/vault/api",
       identity: "https://bw.example.org/vault/identity",
+      notifications: "https://bw.example.org/vault/notifications",
     });
     expect(resolveServerUrls("http://localhost:8080").api).toBe("http://localhost:8080/api");
   });

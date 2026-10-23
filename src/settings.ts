@@ -6,6 +6,8 @@ import type { ControllerSettings } from "./controller";
 import type { ConflictPolicy } from "./sync/plan";
 
 export interface PluginSettings extends ControllerSettings {
+  /** Listen to the server's notifications hub and sync as soon as something changes. */
+  liveSync: boolean;
   syncIntervalMinutes: number;
   autoLockMinutes: number;
 }
@@ -17,6 +19,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   conflictPolicy: "ask",
   rememberKey: false,
   syncOrganizations: false,
+  liveSync: true,
   syncIntervalMinutes: 10,
   autoLockMinutes: 0,
 };
@@ -40,6 +43,7 @@ export function parseSettings(raw: unknown): PluginSettings {
       : DEFAULT_SETTINGS.conflictPolicy,
     rememberKey: typeof r.rememberKey === "boolean" ? r.rememberKey : false,
     syncOrganizations: typeof r.syncOrganizations === "boolean" ? r.syncOrganizations : false,
+    liveSync: typeof r.liveSync === "boolean" ? r.liveSync : DEFAULT_SETTINGS.liveSync,
     syncIntervalMinutes: int("syncIntervalMinutes", 24 * 60),
     autoLockMinutes: int("autoLockMinutes", 24 * 60),
   };

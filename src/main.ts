@@ -2,6 +2,7 @@ import { App, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting } 
 import argon2WorkerSource from "virtual:argon2-worker";
 import { argon2InThread, argon2InWorker, type Argon2Runner } from "./bw/argon2";
 import type { HttpClient } from "./bw/http";
+import { NotificationHub } from "./bw/notifications";
 import { SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SecretsController, type Status } from "./controller";
 import type { SecretStore, SyncReport } from "./sync/engine";
 import type { ConflictOverride, ConflictPolicy } from "./sync/plan";
@@ -38,6 +39,8 @@ export default class KeychainBitwardenPlugin extends Plugin {
   override settings: PluginSettings = { ...DEFAULT_SETTINGS };
 
   controller!: SecretsController;
+  /** Live updates from the server while unlocked. */
+  private hub!: NotificationHub;
   /** Last explicit user action (unlock, manual sync); drives auto-lock. */
   private lastActivity = Date.now();
   private lastSync = 0;
@@ -61,6 +64,15 @@ export default class KeychainBitwardenPlugin extends Plugin {
       deviceName: `Obsidian (${Platform.isMobile ? (Platform.isIosApp ? "iOS" : "Android") : "desktop"})`,
       argon2: this.argon2Runner(),
     });
+
+    this.hub = new NotificationHub({
+      url: () => this.controller.notificationsHubUrl(),
+      createSocket: (url) => new WebSocket(url),
+      deviceId: () => this.controller.deviceId(),
+      onChange: () => void this.syncNow(false),
+    });
+    this.register(() => this.hub.stop());
+    this.register(this.controller.onStatus((s) => (s === "locked" ? this.hub.stop() : this.updateLiveSync())));
 
     if (!Platform.isMobile) {
       const bar = this.addStatusBarItem();
@@ -107,12 +119,21 @@ export default class KeychainBitwardenPlugin extends Plugin {
     );
     // Coming back to the app (desktop focus, mobile resume) is a good moment to pull changes.
     this.registerDomEvent(document, "visibilitychange", () => {
-      if (document.visibilityState === "visible" && this.controller.isUnlocked) void this.syncNow(false);
+      if (document.visibilityState !== "visible" || !this.controller.isUnlocked) return;
+      void this.syncNow(false);
+      // Mobile drops the connection in the background.
+      this.hub.wake();
     });
   }
 
   override onunload(): void {
     this.controller?.lock();
+  }
+
+  /** Starts or stops live updates to match the setting and the lock state. */
+  updateLiveSync(): void {
+    if (this.settings.liveSync && this.controller.isUnlocked) this.hub.start();
+    else this.hub.stop();
   }
 
   /** Argon2id in a worker started from the embedded source, so unlocking never freezes Obsidian. */
@@ -288,6 +309,19 @@ class SettingsTab extends PluginSettingTab {
         t.setValue(p.settings.folderName).onChange(async (v) => {
           p.settings.folderName = v.trim() || "obsidian";
           await p.saveSettings();
+        }),
+      );
+    new Setting(containerEl)
+      .setName("Live updates")
+      .setDesc(
+        "Keep a connection to the server's notifications service while unlocked, and sync as soon as something " +
+          "changes in Bitwarden. Periodic sync keeps running as a fallback.",
+      )
+      .addToggle((t) =>
+        t.setValue(p.settings.liveSync).onChange(async (v) => {
+          p.settings.liveSync = v;
+          await p.saveSettings();
+          p.updateLiveSync();
         }),
       );
     new Setting(containerEl)

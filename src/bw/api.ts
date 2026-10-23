@@ -1,9 +1,12 @@
 import type { HttpClient } from "./http";
+import { hubUrl } from "./notifications";
 import { KdfType, type KdfParams } from "./crypto";
 
 export interface ServerUrls {
   api: string;
   identity: string;
+  /** Base of the notifications hub (live updates). */
+  notifications: string;
 }
 
 /** Maps what a user types (vault URL) to the API and identity endpoints. */
@@ -22,13 +25,21 @@ export function resolveServerUrls(serverUrl: string): ServerUrls {
   if (url.username || url.password) throw new Error("The server URL must not contain credentials");
   const host = url.hostname;
   if (host === "vault.bitwarden.com" || host === "bitwarden.com") {
-    return { api: "https://api.bitwarden.com", identity: "https://identity.bitwarden.com" };
+    return {
+      api: "https://api.bitwarden.com",
+      identity: "https://identity.bitwarden.com",
+      notifications: "https://notifications.bitwarden.com",
+    };
   }
   if (host === "vault.bitwarden.eu" || host === "bitwarden.eu") {
-    return { api: "https://api.bitwarden.eu", identity: "https://identity.bitwarden.eu" };
+    return {
+      api: "https://api.bitwarden.eu",
+      identity: "https://identity.bitwarden.eu",
+      notifications: "https://notifications.bitwarden.eu",
+    };
   }
   const base = `${url.origin}${url.pathname}`.replace(/\/+$/, "");
-  return { api: `${base}/api`, identity: `${base}/identity` };
+  return { api: `${base}/api`, identity: `${base}/identity`, notifications: `${base}/notifications` };
 }
 
 export class BitwardenApiError extends Error {
@@ -239,6 +250,12 @@ export class BitwardenApi {
 
   get isLoggedIn(): boolean {
     return this.session !== null && this.session.expiresAt > this.now();
+  }
+
+  /** WebSocket URL of the notifications hub, authenticated with the current session. */
+  notificationsHubUrl(): string {
+    if (!this.isLoggedIn) throw new BitwardenApiError(401, "Not logged in");
+    return hubUrl(this.urls.notifications, this.session!.accessToken);
   }
 
   logout(): void {
