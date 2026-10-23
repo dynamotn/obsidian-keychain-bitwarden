@@ -2,6 +2,7 @@
 // the obsidian module, so it is exercised directly by the integration tests.
 
 import { BitwardenApi, resolveServerUrls, type ApiCredentials } from "./bw/api";
+import { KdfAbortedError, type Argon2Runner } from "./bw/argon2";
 import { decryptBytes, SymmetricKey } from "./bw/crypto";
 import { fromBase64, toBase64 } from "./bw/encoding";
 import type { HttpClient } from "./bw/http";
@@ -32,6 +33,8 @@ export interface ControllerDeps {
   saveState: (state: DeviceState) => void;
   vaultName: string;
   deviceName: string;
+  /** Where Argon2id runs; the calling thread when omitted (tests). The plugin uses a worker. */
+  argon2?: Argon2Runner;
 }
 
 export type Status = "locked" | "idle" | "syncing" | "error" | "conflict";
@@ -43,8 +46,10 @@ export class SecretsController {
   private running: Promise<SyncReport> | null = null;
   private queued: Promise<SyncReport> | null = null;
   private queuedOverrides: Map<string, ConflictOverride> | undefined;
-  /** Bumped on every lock; a sync started under an older generation stops. */
+  /** Bumped on every lock; a sync or unlock started under an older generation stops. */
   private generation = 0;
+  /** Aborts the key derivation of the unlock in progress, if any. */
+  private unlocking: AbortController | null = null;
   private cachedState: DeviceState | null = null;
   private listeners = new Set<(s: Status, detail?: string) => void>();
   status: Status = "locked";
@@ -115,14 +120,37 @@ export class SecretsController {
     return this.api;
   }
 
-  /** Unlocks with the master password. */
+  /** Unlocks with the master password. Throws KdfAbortedError when locked or cancelled meanwhile. */
   async unlock(password: string): Promise<void> {
     const { email, rememberKey } = this.deps.settings();
     if (!email.trim()) throw new Error("Set the account email in the plugin settings first");
-    const api = await this.session();
-    const sync = await api.sync();
-    const key = await unlockUserKey(api, email, password, sync.profile.key);
-    this.setKey(key, rememberKey);
+    this.cancelUnlock();
+    const generation = this.generation;
+    const abort = new AbortController();
+    this.unlocking = abort;
+    try {
+      const api = await this.session();
+      const sync = await api.sync();
+      if (abort.signal.aborted) throw new KdfAbortedError();
+      const key = await unlockUserKey(api, email, password, sync.profile.key, {
+        argon2: this.deps.argon2,
+        signal: abort.signal,
+      });
+      // A lock that arrived while the key was being derived wins.
+      if (abort.signal.aborted || generation !== this.generation) {
+        key.wipe();
+        throw new KdfAbortedError();
+      }
+      this.setKey(key, rememberKey);
+    } finally {
+      if (this.unlocking === abort) this.unlocking = null;
+    }
+  }
+
+  /** Stops an unlock in progress (for example when its dialog is closed). */
+  cancelUnlock(): void {
+    this.unlocking?.abort();
+    this.unlocking = null;
   }
 
   /** Unlocks from a key remembered on this device, if the user opted in. Returns false when there is none. */
@@ -167,6 +195,7 @@ export class SecretsController {
 
   lock(): void {
     this.generation++;
+    this.cancelUnlock();
     this.userKey?.wipe();
     this.userKey = null;
     this.api?.logout();

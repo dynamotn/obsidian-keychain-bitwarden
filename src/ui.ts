@@ -1,12 +1,17 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting } from "obsidian";
 import type { ConflictInfo, SyncReport } from "./sync/engine";
 import type { ConflictOverride } from "./sync/plan";
+import { KdfAbortedError } from "./bw/argon2";
 import type { Scope } from "./bw/vault";
 
 export class UnlockModal extends Modal {
+  private busy = false;
+
   constructor(
     app: App,
     private readonly onSubmit: (password: string) => Promise<void>,
+    /** Called when the dialog is closed while unlocking is still in progress. */
+    private readonly onCancel: () => void,
   ) {
     super(app);
   }
@@ -20,10 +25,9 @@ export class UnlockModal extends Modal {
     });
     input.setCssProps({ width: "100%" });
     const error = contentEl.createDiv({ cls: "mod-warning" });
-    let busy = false;
     const submit = async () => {
-      if (busy || !input.value) return;
-      busy = true;
+      if (this.busy || !input.value) return;
+      this.busy = true;
       button.setDisabled(true).setButtonText("Unlocking…");
       error.setText("");
       const password = input.value;
@@ -32,10 +36,12 @@ export class UnlockModal extends Modal {
         await this.onSubmit(password);
         this.close();
       } catch (e) {
+        // Cancelled by closing the dialog: there is nothing left to show.
+        if (e instanceof KdfAbortedError) return;
         error.setText((e as Error).message);
         input.focus();
       } finally {
-        busy = false;
+        this.busy = false;
         button.setDisabled(false).setButtonText("Unlock");
       }
     };
@@ -50,6 +56,7 @@ export class UnlockModal extends Modal {
   }
 
   override onClose(): void {
+    if (this.busy) this.onCancel();
     this.contentEl.empty();
   }
 }

@@ -6,6 +6,7 @@ import {
   type ControllerSettings,
 } from "../../src/controller";
 import { resolveServerUrls } from "../../src/bw/api";
+import type { Argon2Runner } from "../../src/bw/argon2";
 import type { HttpClient } from "../../src/bw/http";
 import type { SecretStore } from "../../src/sync/engine";
 import { parseDeviceState, type DeviceState } from "../../src/sync/state";
@@ -38,7 +39,12 @@ export interface TestDevice {
 export function makeDevice(
   http: HttpClient,
   account: { email: string; clientId: string; clientSecret: string },
-  opts: { vaultName?: string; serverUrl?: string; settings?: Partial<ControllerSettings> } = {},
+  opts: {
+    vaultName?: string;
+    serverUrl?: string;
+    settings?: Partial<ControllerSettings>;
+    argon2?: Argon2Runner;
+  } = {},
 ): TestDevice {
   const store = new MemorySecretStore();
   store.set(SECRET_CLIENT_ID, account.clientId);
@@ -67,6 +73,7 @@ export function makeDevice(
     saveState: (s) => localStorage.set("state", structuredClone(s)),
     vaultName: opts.vaultName ?? "notes",
     deviceName: "test",
+    argon2: opts.argon2,
   });
   return { controller, store, settings, localStorage, state: loadState };
 }

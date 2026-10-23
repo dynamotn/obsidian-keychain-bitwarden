@@ -4,7 +4,7 @@
 // Only the "2" EncString type (AES-256-CBC with HMAC-SHA256, encrypt-then-MAC)
 // is accepted. Unauthenticated legacy types are refused on purpose.
 
-import { argon2id } from "hash-wasm";
+import { argon2InThread, KdfAbortedError, type Argon2Runner } from "./argon2";
 import { concatBytes, fromBase64, toBase64, utf8Decode, utf8Encode } from "./encoding";
 
 const subtle = crypto.subtle;
@@ -39,23 +39,46 @@ export function validateKdf(kdf: KdfParams): void {
   throw new CryptoError(`Unsupported KDF type: ${String((kdf as { type: unknown }).type)}`);
 }
 
+export interface DeriveOptions {
+  /** Where Argon2id runs; the calling thread by default. */
+  argon2?: Argon2Runner;
+  /** Stops the derivation (a worker is terminated; the calling thread only checks between steps). */
+  signal?: AbortSignal;
+}
+
 /** Derives the 32-byte master key from the master password. */
-export async function deriveMasterKey(password: string, email: string, kdf: KdfParams): Promise<Uint8Array<ArrayBuffer>> {
+export async function deriveMasterKey(
+  password: string,
+  email: string,
+  kdf: KdfParams,
+  { argon2 = argon2InThread, signal }: DeriveOptions = {},
+): Promise<Uint8Array<ArrayBuffer>> {
   validateKdf(kdf);
+  if (signal?.aborted) throw new KdfAbortedError();
   const salt = utf8Encode(email.trim().toLowerCase());
-  if (kdf.type === KdfType.PBKDF2) {
-    return pbkdf2(utf8Encode(password), salt, kdf.iterations);
+  const pw = utf8Encode(password);
+  try {
+    if (kdf.type === KdfType.PBKDF2) {
+      const key = await pbkdf2(pw, salt, kdf.iterations);
+      if (signal?.aborted) {
+        key.fill(0);
+        throw new KdfAbortedError();
+      }
+      return key;
+    }
+    return await argon2(
+      {
+        password: pw,
+        salt: new Uint8Array(await subtle.digest("SHA-256", salt)),
+        iterations: kdf.iterations,
+        memoryKiB: kdf.memory * 1024,
+        parallelism: kdf.parallelism,
+      },
+      signal,
+    );
+  } finally {
+    pw.fill(0);
   }
-  const out = await argon2id({
-    password: utf8Encode(password),
-    salt: new Uint8Array(await subtle.digest("SHA-256", salt)),
-    iterations: kdf.iterations,
-    memorySize: kdf.memory * 1024,
-    parallelism: kdf.parallelism,
-    hashLength: 32,
-    outputType: "binary",
-  });
-  return new Uint8Array(out);
 }
 
 async function pbkdf2(password: Uint8Array<ArrayBuffer>, salt: Uint8Array<ArrayBuffer>, iterations: number) {

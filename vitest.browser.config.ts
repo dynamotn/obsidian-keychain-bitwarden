@@ -7,6 +7,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     exclude: ["test/integration/**"],
+    globalSetup: ["test/setup/argon2-worker.ts"],
     testTimeout: 60_000,
     browser: {
       enabled: true,

@@ -1,4 +1,6 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting } from "obsidian";
+import argon2WorkerSource from "virtual:argon2-worker";
+import { argon2InThread, argon2InWorker, type Argon2Runner } from "./bw/argon2";
 import type { HttpClient } from "./bw/http";
 import { SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SecretsController, type Status } from "./controller";
 import type { SecretStore, SyncReport } from "./sync/engine";
@@ -9,6 +11,9 @@ import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings
 
 const STATE_KEY = "keychain-bitwarden:state";
 const SETTINGS_KEY = "keychain-bitwarden:settings";
+
+/** Generous: the worker keeps Obsidian responsive, the limit only stops a runaway derivation. */
+const ARGON2_TIMEOUT_MS = 120_000;
 
 const STATUS_TEXT: Record<Status, string> = {
   locked: "🔒 Bitwarden",
@@ -54,6 +59,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
       saveState: (s) => this.app.saveLocalStorage(STATE_KEY, s),
       vaultName: this.app.vault.getName(),
       deviceName: `Obsidian (${Platform.isMobile ? (Platform.isIosApp ? "iOS" : "Android") : "desktop"})`,
+      argon2: this.argon2Runner(),
     });
 
     if (!Platform.isMobile) {
@@ -109,6 +115,14 @@ export default class KeychainBitwardenPlugin extends Plugin {
     this.controller?.lock();
   }
 
+  /** Argon2id in a worker started from the embedded source, so unlocking never freezes Obsidian. */
+  private argon2Runner(): Argon2Runner {
+    if (typeof Worker === "undefined") return argon2InThread;
+    const url = URL.createObjectURL(new Blob([argon2WorkerSource], { type: "text/javascript" }));
+    this.register(() => URL.revokeObjectURL(url));
+    return argon2InWorker({ spawn: () => new Worker(url), timeoutMs: ARGON2_TIMEOUT_MS, fallback: argon2InThread });
+  }
+
   private loadDeviceState(): DeviceState {
     const raw: unknown = this.app.loadLocalStorage(STATE_KEY);
     const state = parseDeviceState(raw);
@@ -137,11 +151,16 @@ export default class KeychainBitwardenPlugin extends Plugin {
   }
 
   openUnlock(): void {
-    new UnlockModal(this.app, async (password) => {
-      await this.controller.unlock(password);
-      this.lastActivity = Date.now();
-      await this.syncNow(true);
-    }).open();
+    new UnlockModal(
+      this.app,
+      async (password) => {
+        await this.controller.unlock(password);
+        this.lastActivity = Date.now();
+        await this.syncNow(true);
+      },
+      // Closing the dialog stops the key derivation instead of letting it finish unseen.
+      () => this.controller.cancelUnlock(),
+    ).open();
   }
 
   async syncNow(verbose: boolean, overrides?: Map<string, ConflictOverride>): Promise<void> {

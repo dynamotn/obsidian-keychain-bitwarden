@@ -1,7 +1,15 @@
 // Maps Bitwarden items in one folder to Obsidian secrets, and back.
 
 import type { BitwardenApi, CipherDto, CipherRequest, FieldDto, SyncDto } from "./api";
-import { decryptString, deriveMasterKey, encryptString, stretchMasterKey, SymmetricKey, decryptBytes } from "./crypto";
+import {
+  decryptBytes,
+  decryptString,
+  deriveMasterKey,
+  encryptString,
+  stretchMasterKey,
+  SymmetricKey,
+  type DeriveOptions,
+} from "./crypto";
 
 export const CipherType = { Login: 1, SecureNote: 2 } as const;
 export const FIELD_ID = "obsidian-id";
@@ -54,9 +62,10 @@ export async function unlockUserKey(
   email: string,
   password: string,
   encryptedUserKey: string,
+  options: DeriveOptions = {},
 ): Promise<SymmetricKey> {
   const kdf = await api.prelogin(email);
-  const masterKey = await deriveMasterKey(password, email, kdf);
+  const masterKey = await deriveMasterKey(password, email, kdf, options);
   const stretched = await stretchMasterKey(masterKey);
   masterKey.fill(0);
   try {
