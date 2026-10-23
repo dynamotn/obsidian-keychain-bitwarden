@@ -9,6 +9,9 @@ plugin makes Bitwarden the place where those secrets live: add a secret once,
 and it appears on every device where the plugin is unlocked. Other plugins
 keep reading `app.secretStorage` as usual and need no changes.
 
+Design, security review, test results and performance figures are in
+[`docs/obsidian-plugin.md`](../docs/obsidian-plugin.md).
+
 ## How it maps
 
 - Every **login** or **secure note** item in the Bitwarden folder (default
