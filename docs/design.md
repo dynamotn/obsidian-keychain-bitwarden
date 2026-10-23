@@ -6,10 +6,10 @@ way it is, and how it was verified. The user-facing summary is in
 
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
-- Runtime dependency: `hash-wasm` (Argon2id). Everything else is WebCrypto
-  and the Obsidian API.
-- Bundle: one 61.6 KiB `main.js` (production build). Its only import is
-  `obsidian`.
+- Runtime dependency: `hash-wasm` (Argon2id). Everything else is WebCrypto,
+  Web Workers, WebSocket and the Obsidian API.
+- Bundle: one 103.6 KiB `main.js` (production build), with the Argon2
+  worker embedded in it. Its only import is `obsidian`.
 
 ## Contents
 
@@ -93,19 +93,25 @@ flowchart LR
     E <--> SS
     C <--> LS[(vault localStorage<br/>settings + device state)]
   end
-  E --> V[bw/vault.ts<br/>item mapping]
-  V --> K[bw/crypto.ts<br/>KDF, EncString]
+  E --> V[bw/vault.ts<br/>item mapping,<br/>organization keys]
+  V --> K[bw/crypto.ts<br/>KDF, EncString, RSA]
+  K --> W[bw/argon2.ts<br/>Argon2id in a Worker]
   E --> A[bw/api.ts<br/>REST client]
   A -- requestUrl --> BW[(Bitwarden / Vaultwarden)]
+  UI --> H[bw/notifications.ts<br/>live updates]
+  H -- WebSocket, SignalR --> BW
 ```
 
 | Module | Responsibility | Depends on `obsidian`? |
 |---|---|---|
 | `src/bw/encoding.ts` | base64 and UTF-8 without `Buffer` | no |
-| `src/bw/crypto.ts` | PBKDF2/Argon2id, HKDF-Expand, `SymmetricKey`, EncString type 2, `ValueFingerprinter` | no |
+| `src/bw/crypto.ts` | PBKDF2/Argon2id, HKDF-Expand, `SymmetricKey`, EncString type 2, RSA-OAEP organization keys, `ValueFingerprinter` | no |
+| `src/bw/argon2.ts`, `src/bw/argon2.worker.ts` | Argon2id runners: in a Worker (cancellable, with a timeout) or on the calling thread | no |
+| `src/bw/msgpack.ts` | Bounds-checked MessagePack decoder and SignalR framing | no |
+| `src/bw/notifications.ts` | Notifications hub client: handshake, pings, reconnect, coalescing | no |
 | `src/bw/http.ts` | `HttpClient` abstraction (`requestUrl` in the plugin, `fetch` in tests) | no |
 | `src/bw/api.ts` | URL resolution, prelogin, API-key login, sync, folder and item writes, error shaping | no |
-| `src/bw/vault.ts` | Unlock, folder lookup, `readFolder`, request builders, scopes | no |
+| `src/bw/vault.ts` | Unlock, organization keys, folder lookup, `readFolder`, request builders, scopes | no |
 | `src/sync/plan.ts` | Pure three-way reconciliation: no I/O, deterministic | no |
 | `src/sync/engine.ts` | One sync run: passes, safety guards, applying actions | no |
 | `src/sync/state.ts` | Per-device state type, validation, reset | no |
@@ -141,10 +147,15 @@ Rules:
   ignored and can never overwrite them. The plugin's former prefix,
   `bitwarden-secrets-`, stays reserved too: secret storage cannot delete, so
   credentials saved before the rename remain on the device.
-- **Duplicates**: if two items carry the same id, the newest `revisionDate`
-  wins and the other is reported.
-- **Excluded items**: organization items, trashed items (`deletedDate`) and
-  other item types (cards, identities, SSH keys).
+- **Duplicates**: if two items carry the same id, a personal item wins over
+  an organization item; otherwise the newest `revisionDate` wins. The other
+  is reported.
+- **Organization items** are read only when *Sync organization items* is
+  on. They are decrypted with their organization's key, items the user may
+  not edit (`edit: false`) are only pulled, and items whose password the
+  organization hides (`viewPassword: false`) are skipped.
+- **Excluded items**: trashed items (`deletedDate`), other item types
+  (cards, identities, SSH keys), and organization items unless enabled.
 - **New uploads** are secure notes holding the `obsidian-id` field, plus
   `obsidian-scope` when it is not global. A new folder is created on the
   first upload if none exists.
@@ -160,7 +171,9 @@ Rules:
   - send `lastKnownRevisionDate`, so the server rejects the edit if the item
     changed elsewhere in the meantime;
   - send `encryptedFor` (the account id from the last sync). Vaultwarden
-    1.37 refuses writes without it; bitwarden.com treats it as optional.
+    1.37 refuses writes without it; bitwarden.com treats it as optional;
+  - keep `organizationId`: an edit never moves an item in or out of its
+    organization, and its collections are untouched.
 
 ## 5. Authentication, unlock and cryptography
 
@@ -183,8 +196,29 @@ masterKey = PBKDF2-SHA256(password, lower(trim(email)), iterations)
           | Argon2id(password, SHA-256(lower(trim(email))), m, t, p)
 stretched = HKDF-Expand(masterKey, "enc") ‖ HKDF-Expand(masterKey, "mac")
 userKey   = decrypt(sync.profile.key, stretched)       (64 bytes: enc ‖ mac)
-itemKey   = decrypt(cipher.key, userKey)                if the item has its own key
+private   = decrypt(sync.profile.privateKey, userKey)  (PKCS#8, only for organizations)
+orgKey    = RSA-OAEP-decrypt(organization.key, private) (type 4: SHA-1, type 3: SHA-256)
+itemKey   = decrypt(cipher.key, userKey or orgKey)      if the item has its own key
 ```
+
+### Argon2id off the main thread (`argon2.ts`)
+
+Bitwarden lets an account ask for up to 1 GiB and 10 iterations. On a phone
+that can take long enough to freeze Obsidian, so the plugin derives the key
+in a **Web Worker**:
+
+- The worker is bundled on its own (`scripts/argon2-worker.mjs`) and
+  embedded in `main.js` as text, because a plugin ships as one file. It is
+  started from a Blob URL, one worker per derivation.
+- The password is copied into the worker and the copy on the main thread is
+  zeroed; the worker zeroes its copy when done.
+- Closing the unlock dialog, or locking, aborts the derivation: the worker is
+  terminated mid-computation. A derivation still running after **two
+  minutes** is stopped with an explanation.
+- A lock that arrives while the key is being derived wins: the derived key
+  is wiped instead of unlocking.
+- When a worker cannot be started at all, the derivation falls back to the
+  main thread.
 
 ### Ciphertexts (`crypto.ts`)
 
@@ -192,6 +226,8 @@ itemKey   = decrypt(cipher.key, userKey)                if the item has its own 
   encrypt-then-MAC, in the format `2.iv|ct|mac`.
   - Types 0 and 1 (unauthenticated) are refused.
   - Type 7 (COSE) is refused with a dedicated message.
+  - For organization keys only RSA-OAEP types 3 and 4 are accepted; the
+    RSA+HMAC types 5 and 6 are refused.
 - The parser checks that the IV is 16 bytes, the MAC 32 bytes and the
   ciphertext a non-empty multiple of 16.
 - The MAC is verified with `subtle.verify` (constant time) **before**
@@ -296,10 +332,38 @@ Notes on the table:
 ### 6.4 Triggers (`main.ts`)
 
 - After unlocking.
+- When the **notifications hub** announces a change (see 6.5).
 - On the **Sync now** command and on a status bar click.
-- Every `syncIntervalMinutes` (default 10).
+- Every `syncIntervalMinutes` (default 10), as a fallback.
 - When Obsidian becomes visible again (`visibilitychange`): desktop focus,
-  mobile resume.
+  mobile resume. The hub reconnects at the same moment.
+
+### 6.5 Live updates (`notifications.ts`)
+
+While unlocked and with *Live updates* on (the default), the plugin keeps a
+WebSocket to the server's notifications hub, as the official clients do:
+
+- **Endpoint**: `wss://notifications.bitwarden.com/hub`,
+  `wss://notifications.bitwarden.eu/hub`, or `<server>/notifications/hub`
+  for self-hosted servers, authenticated with the API session's access token
+  in the query string.
+- **Protocol**: SignalR with the MessagePack protocol, the only one
+  Vaultwarden speaks. The handshake is
+  `{"protocol":"messagepack","version":1}` followed by `0x1e`; messages are
+  VarInt-length-prefixed MessagePack arrays. The client pings every 15
+  seconds and reconnects if nothing arrives for 60 seconds.
+- **What counts**: `ReceiveMessage` invocations whose `Type` is a vault
+  change (cipher or folder created, updated or deleted, full vault sync,
+  organization keys). A notification whose `ContextId` is this device's own
+  identifier is ignored: it reports a change this device made.
+- **Coalescing**: notifications only trigger a regular sync. A burst is
+  reported once, after 1 second of quiet, and at most every 5 seconds.
+- **Reconnects** back off from 2 seconds to 5 minutes, reset after each
+  successful handshake. Callbacks of a replaced socket are ignored.
+- **Untrusted input**: the MessagePack decoder bounds-checks every read,
+  limits nesting to 32 levels and messages to 1 MiB, rejects invalid UTF-8,
+  and builds maps without a prototype. Malformed data closes the connection
+  and starts over.
 
 ## 7. Local state and settings
 
@@ -308,7 +372,7 @@ device** (`app.saveLocalStorage`):
 
 | Key | Content |
 |---|---|
-| `keychain-bitwarden:settings` | server URL, email, folder name, conflict policy, remember key, sync interval, auto-lock |
+| `keychain-bitwarden:settings` | server URL, email, folder name, conflict policy, organization items, live updates, remember key, sync interval, auto-lock |
 | `keychain-bitwarden:state` | `deviceId`, `folderId`, `base` (per id: `cipherId`, `revisionDate`, `fingerprint`, `scope`), pending uploads and their scopes |
 
 `data.json` is not used. It is routinely synced (Obsidian Sync, iCloud) or
@@ -340,14 +404,16 @@ prefix:
   conflicts. Clicking it unlocks, resolves conflicts or syncs. Mobile has no
   status bar, so it uses Notices instead.
 - **Unlock modal**: a password field. The input is cleared as soon as it is
-  submitted, and errors show in place.
+  submitted, and errors show in place. Closing it while unlocking cancels
+  the key derivation.
 - **Conflict modal**: values are never displayed, only the id, the label and
   the kind of conflict. For each conflict the user picks "Use Bitwarden" or
   "Use this device" ("Clear on this device" or "Upload again" for remote
   deletions), or "Decide later".
-- **Settings tab**: account (server, email, API key), sync (folder,
-  interval, conflict policy), security (remember unlock, auto-lock), and
-  actions (lock/unlock, sync, reset sync state; the device id is shown).
+- **Settings tab**: account (server, email, API key), sync (folder, live
+  updates, interval, conflict policy, organization items), security
+  (remember unlock, auto-lock), and actions (lock/unlock, sync, reset sync
+  state; the device id is shown).
 
 ## 9. Security model
 
@@ -361,6 +427,8 @@ prefix:
 | API key | Stored in SecretStorage; sent only to the identity origin it was entered for; `https` required except on loopback |
 | Local edits | Never silently overwritten (race re-check, `local-unsynced` always asked, conflict choices tied to the conflict kind) |
 | Local secrets in general | Mass-clear guard, folder-loss and folder-swap guards; unreadable items are held, not cleared |
+| Personal secrets vs. organization items | Organization items are opt-in and never take over a personal item's id |
+| The app's responsiveness | Argon2id in a terminable worker; notifications coalesced and spaced out |
 
 ### 9.2 Security review
 
@@ -381,7 +449,7 @@ severity were fixed, each with a regression test (`test/sync.test.ts`,
 | 8 | Low | Conflict choices could apply to a conflict that had changed | Overrides carry the conflict kind |
 | 9 | Low | Duplicate folder names caused a permanent abort | All matches are considered; the known folder is preferred |
 | 10 | Low | The remembered key was not verified when the account has no private key | Without something to verify it against, the password is required |
-| 11 | Low | A server-set Argon2 cost could freeze a phone | Bounded (≤ 1 GiB); still on the main thread (see limitations) |
+| 11 | Low | A server-set Argon2 cost could freeze a phone | Bounded (≤ 1 GiB), and run in a worker that can be cancelled and times out |
 | 12 | Low | Locking did not stop a running sync | Generation counter, checked between steps |
 | 13 | Low | Server error text was shown verbatim | Clipped to 200 characters and prefixed `server says:` |
 
@@ -404,7 +472,15 @@ Static analysis:
   - withhold items, which the mass-clear guard limits;
   - roll back to old values;
   - move other personal items into the folder, because `folderId` is not
-    encrypted and is not bound to the ciphertext.
+    encrypted and is not bound to the ciphertext;
+  - with *Sync organization items* on, **forge an organization**: an
+    organization key reaches the client RSA-encrypted to the account's
+    public key, which the server knows. A hostile server, like any
+    organization member, can therefore create organization items in the
+    folder. They cannot replace a personal item's secret (personal items
+    win), but they can set or change secrets that only exist as
+    organization items. Hence the opt-in and the settings text;
+  - send notifications at will, which only cause coalesced extra syncs.
 - **Redirects**: `requestUrl` gives no control over redirects. A 307/308 to
   another host could carry the token request body. (The companion `bwss`
   Secret Service daemon, which lives in a separate repository, disables
@@ -415,13 +491,20 @@ Static analysis:
 | Suite | Command | Result |
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
-| Unit and multi-device sync (in-memory Bitwarden) | `npm test` | **68 passed** |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **136 passed** (68 × 2) |
-| Real server + independent clients | `npm run test:integration` | **7 passed** |
+| Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
+| Unit and multi-device sync (in-memory Bitwarden) | `npm test` | **175 passed**, 2 skipped (the real-worker tests, which need a browser) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **354 passed** (177 × 2) |
+| Real server + independent clients | `npm run test:integration` | **9 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
 | Bundle portability gate | `npm run check:bundle` | only `obsidian` is required, no Node globals |
 
 ### 10.1 Known-answer vectors
+
+`test/fixtures/gen_msgpack.py` encodes 46 values with the official Python
+`msgpack` library (integer and string size classes, 64-bit integers beyond
+2^53, floats, binary, maps and arrays at their size boundaries, the three
+timestamp formats); the decoder must read them back exactly. A frame
+captured from Vaultwarden 1.37.4 is decoded as well.
 
 `test/fixtures/gen_vectors.py` is an **independent Python implementation**
 (`cryptography`, `argon2-cffi`). It produces the PBKDF2 (600,000 iterations)
@@ -456,7 +539,15 @@ Tests run two or more "devices" against it, covering:
 - state that stays per device;
 - unlock with Argon2id, a wrong password, a wrong API key, the remembered
   key, and a stale remembered key;
-- the 11 audit regressions.
+- the 11 audit regressions;
+- organization items: opt-in, pull and push with the organization key
+  (both RSA-OAEP variants), read-only and hidden-password items, personal
+  items winning, unconfirmed memberships, unreadable organization keys;
+- Argon2id in a worker: cancellation, timeout, worker failure, fallback,
+  and the known-answer key from the worker exactly as embedded in `main.js`
+  (in WebKit and Chromium);
+- the notifications hub: handshake, coalescing, own-device filtering,
+  pings, backoff, silence detection, malformed input, stale sockets.
 
 ### 10.3 Against a real server, cross-checked with independent clients
 
@@ -480,6 +571,13 @@ The setup:
   device B's edit; Vaultwarden rejects it, and the plugin re-plans and
   reports the conflict.
 - An **Argon2id account** unlocks and uploads.
+- An **organization**, created the way the web vault creates one, with an
+  item filed in the account's folder: the plugin pulls it, pushes an edit
+  encrypted with the organization key, and the item stays in its
+  organization.
+- The **notifications hub**: device B uploads, device A hears about it
+  within seconds and pulls it, and B's own change is not reported back to
+  B (so `ContextId` is the `deviceIdentifier` the plugin logs in with).
 
 Problems this phase found, all fixed:
 
@@ -493,6 +591,11 @@ Problems this phase found, all fixed:
 4. The official CLI demands https, hence the TLS proxy. The proxy also had
    to be driven asynchronously, because a blocking `execFileSync` froze the
    event loop it runs on.
+5. rbw's agent loads organization keys only when it unlocks, so after the
+   organization test it could not decrypt the vault until it was locked and
+   unlocked again.
+6. Registering many accounts in a row eventually hits a registration rate
+   limit (HTTP 429); a fresh container clears it.
 
 ## 11. Portability
 
@@ -504,6 +607,8 @@ Android. It has no Node.js. The plugin relies only on:
 | `crypto.subtle` (PBKDF2, HKDF via HMAC, AES-CBC, HMAC) | all crypto | secure context, which Obsidian provides |
 | `crypto.getRandomValues`, `crypto.randomUUID` | IVs, device id | `randomUUID`: iOS 15.4+, Chromium 92+ |
 | `WebAssembly` | Argon2id (`hash-wasm`) | 16–1024 MiB linear memory |
+| `Worker`, `Blob`, `URL.createObjectURL` | Argon2id off the main thread | falls back to the main thread when unavailable |
+| `WebSocket` | live updates | the connection drops in the background on mobile; it is reopened on resume |
 | `TextEncoder`/`TextDecoder`, `atob`/`btoa` | encoding | no `Buffer` |
 | `requestUrl` | HTTP | bypasses CORS on mobile |
 | `app.saveLocalStorage` / `loadLocalStorage` | settings, state | device-local |
@@ -516,7 +621,7 @@ How this is enforced:
   `obsidian` or touches `Buffer`, `process`, `__dirname`, `eval` or
   `new Function`.
 - The whole unit suite runs in **WebKit 27.2** and **Chromium** through
-  Playwright. They are the closest stand-ins for Obsidian iOS and Android
+  Playwright, including the embedded Argon2 worker started from a Blob URL. They are the closest stand-ins for Obsidian iOS and Android
   that can be automated; they are not the Obsidian apps themselves.
 
 ## 12. Performance
@@ -540,26 +645,29 @@ budgets catch order-of-magnitude regressions, not noise.
 
 ## 13. Limitations and future work
 
-- **Unsupported item formats**: organization items and COSE (type 7) items
-  are skipped and held, never cleared.
+- **Unsupported item formats**: COSE (type 7) items are skipped and held,
+  never cleared. Supporting them needs XChaCha20-Poly1305 and COSE parsing,
+  and independent test vectors, which do not exist yet.
 - **Mobile vault isolation**: if mobile SecretStorage is indeed app-wide, a
-  `vault:` scope cannot isolate secrets between vaults there.
-- **Argon2 on the main thread**: a very expensive Argon2 setting can freeze
-  a phone during unlock. A Worker with a timeout would fix it.
-- **Deletion**: there is no delete API, so remote deletions become empty
-  values.
-- **Real-time updates**: the plugin polls; Bitwarden's SignalR hub is not
-  used yet.
+  `vault:` scope cannot isolate secrets between vaults there. That is
+  Obsidian's behaviour; the plugin cannot change it.
+- **Deletion**: SecretStorage has no delete API, so remote deletions become
+  empty values.
+- **Organization items** cannot be created from Obsidian (uploads are
+  personal), and their trust model is weaker (see 9.3).
+- **Settings API**: the settings tab still uses `display()`, deprecated in
+  Obsidian 1.13 in favour of `getSettingDefinitions()`. Moving to it means
+  raising `minAppVersion` from 1.11.4 to 1.13.0; until then the settings do
+  not show up in Obsidian's settings search.
 - **Testing on devices**: testing inside the real Obsidian mobile apps is
   still manual. The Playwright engines are stand-ins.
-- **Plugin review**: before a community-plugin submission, run Obsidian's
-  ESLint plugin (`eslint-plugin-obsidianmd`), which is not set up yet.
 
 ## 14. Development guide
 
 ```sh
 npm install
-npm run build              # typecheck + production main.js
+npm run lint               # eslint-plugin-obsidianmd
+npm run build              # typecheck (TypeScript 7) + production main.js with the embedded worker
 npm run check:bundle
 npm test                   # unit + multi-device
 npm run test:browser       # needs: npx playwright install chromium webkit
