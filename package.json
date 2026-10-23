@@ -1,0 +1,32 @@
+{
+  "name": "obsidian-bitwarden-secrets",
+  "version": "0.1.0",
+  "description": "Obsidian plugin: sync SecretStorage with a Bitwarden folder",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "build": "tsc -p . && node esbuild.config.mjs --production",
+    "dev": "node esbuild.config.mjs",
+    "test": "vitest run",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "test:browser": "vitest run -c vitest.browser.config.ts",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "perf": "vitest run -c vitest.perf.config.ts",
+    "perf:browser": "PERF_BROWSER=1 vitest run -c vitest.perf.config.ts"
+  },
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@bitwarden/cli": "2026.10.0",
+    "@types/node": "26.6.5",
+    "@vitest/browser-playwright": "4.1.12",
+    "esbuild": "0.28.2",
+    "obsidian": "1.14.4",
+    "playwright": "1.64.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.12"
+  },
+  "dependencies": {
+    "hash-wasm": "4.12.0"
+  },
+  "private": true
+}

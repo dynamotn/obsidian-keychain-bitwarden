@@ -1,0 +1,263 @@
+// Maps Bitwarden items in one folder to Obsidian secrets, and back.
+
+import type { BitwardenApi, CipherDto, CipherRequest, FieldDto, SyncDto } from "./api";
+import { decryptString, deriveMasterKey, encryptString, stretchMasterKey, SymmetricKey, decryptBytes } from "./crypto";
+
+export const CipherType = { Login: 1, SecureNote: 2 } as const;
+export const FIELD_ID = "obsidian-id";
+export const FIELD_SCOPE = "obsidian-scope";
+
+/** Same rule as SecretStorage.setSecret: lowercase alphanumerics with optional dashes. */
+export const SECRET_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export type Scope = { kind: "global" } | { kind: "vault"; name: string } | { kind: "device"; id: string };
+
+export interface SecretRecord {
+  id: string;
+  cipherId: string;
+  revisionDate: string;
+  label: string;
+  value: string;
+  scope: Scope;
+  /** Kept to re-encrypt edits without disturbing the parts of the item this plugin does not own. */
+  cipher: CipherDto;
+}
+
+export interface SkippedItem {
+  cipherId: string;
+  reason: string;
+}
+
+export function parseScope(raw: string | null | undefined): Scope | null {
+  const v = (raw ?? "").trim();
+  if (v === "" || v === "global") return { kind: "global" };
+  if (v.startsWith("vault:") && v.length > 6) return { kind: "vault", name: v.slice(6) };
+  if (v.startsWith("device:") && v.length > 7) return { kind: "device", id: v.slice(7) };
+  return null;
+}
+
+export function formatScope(scope: Scope): string {
+  if (scope.kind === "vault") return `vault:${scope.name}`;
+  if (scope.kind === "device") return `device:${scope.id}`;
+  return "global";
+}
+
+export function scopeApplies(scope: Scope, vaultName: string, deviceId: string): boolean {
+  if (scope.kind === "vault") return scope.name === vaultName;
+  if (scope.kind === "device") return scope.id === deviceId;
+  return true;
+}
+
+/** Derives the user key from the master password and the account key in the sync response. */
+export async function unlockUserKey(
+  api: BitwardenApi,
+  email: string,
+  password: string,
+  encryptedUserKey: string,
+): Promise<SymmetricKey> {
+  const kdf = await api.prelogin(email);
+  const masterKey = await deriveMasterKey(password, email, kdf);
+  const stretched = await stretchMasterKey(masterKey);
+  masterKey.fill(0);
+  try {
+    const raw = await decryptBytes(encryptedUserKey, stretched);
+    try {
+      return await SymmetricKey.fromBytes(raw);
+    } finally {
+      raw.fill(0);
+    }
+  } finally {
+    stretched.wipe();
+  }
+}
+
+/**
+ * Finds the ids of every folder with this (encrypted) name; Bitwarden allows
+ * duplicates. Folder names are the only thing decrypted outside the folder.
+ */
+export async function findFolderIds(sync: SyncDto, userKey: SymmetricKey, folderName: string): Promise<string[]> {
+  const ids: string[] = [];
+  for (const f of sync.folders) {
+    try {
+      if ((await decryptString(f.name, userKey)) === folderName) ids.push(f.id);
+    } catch {
+      // A folder we cannot decrypt is not ours.
+    }
+  }
+  return ids;
+}
+
+async function itemKeyFor(cipher: CipherDto, userKey: SymmetricKey): Promise<SymmetricKey> {
+  if (!cipher.key) return userKey;
+  const raw = await decryptBytes(cipher.key, userKey);
+  try {
+    return await SymmetricKey.fromBytes(raw);
+  } finally {
+    raw.fill(0);
+  }
+}
+
+async function decryptField(value: string | null | undefined, key: SymmetricKey): Promise<string | null> {
+  return value ? decryptString(value, key) : null;
+}
+
+/**
+ * Decrypts the personal, non-deleted login and secure-note items of one folder.
+ * Items elsewhere in the vault are never decrypted.
+ */
+export async function readFolder(
+  sync: SyncDto,
+  userKey: SymmetricKey,
+  folderId: string,
+): Promise<{ records: SecretRecord[]; skipped: SkippedItem[]; present: Set<string> }> {
+  const records: SecretRecord[] = [];
+  const skipped: SkippedItem[] = [];
+  const inFolder = sync.ciphers.filter((c) => c.folderId === folderId && !c.deletedDate);
+  // Every live item in the folder, readable or not: an item that merely became
+  // unreadable must not look deleted.
+  const present = new Set(inFolder.map((c) => c.id));
+  for (const cipher of inFolder) {
+    if (cipher.organizationId) {
+      skipped.push({ cipherId: cipher.id, reason: "organization items are not synced" });
+      continue;
+    }
+    if (cipher.type !== CipherType.SecureNote && cipher.type !== CipherType.Login) {
+      skipped.push({ cipherId: cipher.id, reason: "only login and secure note items are synced" });
+      continue;
+    }
+    let key = userKey;
+    try {
+      key = await itemKeyFor(cipher, userKey);
+      const label = (await decryptField(cipher.name, key)) ?? "";
+      const fields = new Map<string, string>();
+      for (const f of cipher.fields ?? []) {
+        const name = await decryptField(f.name, key);
+        if (name === FIELD_ID || name === FIELD_SCOPE) fields.set(name, (await decryptField(f.value, key)) ?? "");
+      }
+      const id = (fields.get(FIELD_ID) ?? label).trim();
+      if (!SECRET_ID_PATTERN.test(id)) {
+        skipped.push({
+          cipherId: cipher.id,
+          reason: `"${FIELD_ID}" field or item name must be lowercase letters, digits and dashes`,
+        });
+        continue;
+      }
+      const scope = parseScope(fields.get(FIELD_SCOPE));
+      if (!scope) {
+        skipped.push({ cipherId: cipher.id, reason: `unknown "${FIELD_SCOPE}" value` });
+        continue;
+      }
+      const rawValue =
+        cipher.type === CipherType.Login
+          ? (cipher.login?.password as string | null | undefined)
+          : cipher.notes;
+      const value = (await decryptField(rawValue, key)) ?? "";
+      records.push({ id, cipherId: cipher.id, revisionDate: cipher.revisionDate, label, value, scope, cipher });
+    } catch (e) {
+      skipped.push({ cipherId: cipher.id, reason: (e as Error).message });
+    } finally {
+      if (key !== userKey) key.wipe();
+    }
+  }
+  return { records, skipped, present };
+}
+
+/** Builds a request for a new secure note holding one secret. */
+export async function newSecretRequest(
+  userKey: SymmetricKey,
+  folderId: string,
+  id: string,
+  value: string,
+  scope: Scope,
+): Promise<CipherRequest> {
+  const fields: FieldDto[] = [
+    { type: 0, name: await encryptString(FIELD_ID, userKey), value: await encryptString(id, userKey) },
+  ];
+  if (scope.kind !== "global") {
+    fields.push({
+      type: 0,
+      name: await encryptString(FIELD_SCOPE, userKey),
+      value: await encryptString(formatScope(scope), userKey),
+    });
+  }
+  return {
+    type: CipherType.SecureNote,
+    folderId,
+    organizationId: null,
+    name: await encryptString(id, userKey),
+    notes: value === "" ? null : await encryptString(value, userKey),
+    fields,
+    favorite: false,
+    reprompt: 0,
+    key: null,
+    secureNote: { type: 0 },
+  };
+}
+
+/**
+ * Builds an update that changes only the secret value and passes every other
+ * part of the item through untouched (still encrypted).
+ */
+export async function updateValueRequest(
+  record: SecretRecord,
+  userKey: SymmetricKey,
+  value: string,
+  now: Date = new Date(),
+): Promise<CipherRequest> {
+  const c = record.cipher;
+  const key = await itemKeyFor(c, userKey);
+  try {
+    const encValue = value === "" ? null : await encryptString(value, key);
+    // Start from the item as the server sent it so that properties this plugin
+    // does not know about (newer item types, archive state, ...) survive the
+    // edit; drop only the response-only metadata.
+    const {
+      id: _id,
+      revisionDate: _rev,
+      creationDate: _created,
+      deletedDate: _deleted,
+      object: _object,
+      edit: _edit,
+      viewPassword: _view,
+      permissions: _perm,
+      collectionIds: _collections,
+      attachments: _attachments,
+      organizationUseTotp: _orgTotp,
+      data: _legacy,
+      ...passthrough
+    } = c as CipherDto & Record<string, unknown>;
+    const req: CipherRequest = {
+      ...(passthrough as Partial<CipherRequest>),
+      type: c.type,
+      folderId: c.folderId,
+      organizationId: null,
+      name: c.name,
+      notes: c.notes,
+      fields: c.fields ?? [],
+      favorite: c.favorite ?? false,
+      reprompt: c.reprompt ?? 0,
+      key: c.key ?? null,
+      // The server replaces the history with whatever the request carries, so
+      // it must always be sent back.
+      passwordHistory: c.passwordHistory ?? null,
+      lastKnownRevisionDate: c.revisionDate,
+    };
+    if (c.type === CipherType.Login) {
+      const previous = c.login?.password as string | null | undefined;
+      if (previous) {
+        // Like the official clients: keep the replaced password, newest first, at most 5.
+        req.passwordHistory = [{ password: previous, lastUsedDate: now.toISOString() }, ...(c.passwordHistory ?? [])].slice(
+          0,
+          5,
+        );
+      }
+      req.login = { ...(c.login ?? {}), password: encValue, passwordRevisionDate: now.toISOString() };
+    } else {
+      req.notes = encValue;
+      req.secureNote = c.secureNote ?? { type: 0 };
+    }
+    return req;
+  } finally {
+    if (key !== userKey) key.wipe();
+  }
+}
