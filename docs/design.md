@@ -1,10 +1,10 @@
-# Bitwarden Secrets for Obsidian — design and verification
+# Keychain Bitwarden for Obsidian — design and verification
 
 This document records how the plugin works, why it is built the
 way it is, and how it was verified. The user-facing summary is in
 [`README.md`](../README.md).
 
-- Plugin id `bitwarden-secrets`, version 0.1.0, `minAppVersion` 1.11.4.
+- Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
 - Runtime dependency: `hash-wasm` (Argon2id). Everything else is WebCrypto
   and the Obsidian API.
@@ -136,9 +136,11 @@ Rules:
 
 - **Ids** must match `^[a-z0-9]+(?:-[a-z0-9]+)*$`, the same rule as
   `setSecret`. Other items in the folder are skipped and reported.
-- **Reserved ids** start with `bitwarden-secrets-`. The plugin keeps its own
+- **Reserved ids** start with `keychain-bitwarden-`. The plugin keeps its own
   credentials under that prefix, so Bitwarden items with such an id are
-  ignored and can never overwrite them.
+  ignored and can never overwrite them. The plugin's former prefix,
+  `bitwarden-secrets-`, stays reserved too: secret storage cannot delete, so
+  credentials saved before the rename remain on the device.
 - **Duplicates**: if two items carry the same id, the newest `revisionDate`
   wins and the other is reported.
 - **Excluded items**: organization items, trashed items (`deletedDate`) and
@@ -208,7 +210,7 @@ itemKey   = decrypt(cipher.key, userKey)                if the item has its own 
 
 To notice local edits without storing values, the plugin keeps
 `HMAC-SHA256(K, id ‖ 0x00 ‖ value)`, where
-`K = HKDF-Expand(userKey.mac, "obsidian-bitwarden-secrets:value-fingerprint")`.
+`K = HKDF-Expand(userKey.mac, "obsidian-keychain-bitwarden:value-fingerprint")`.
 
 - Without the user key it reveals nothing, unlike a plain hash, which could
   be brute-forced for low-entropy secrets.
@@ -306,8 +308,8 @@ device** (`app.saveLocalStorage`):
 
 | Key | Content |
 |---|---|
-| `bitwarden-secrets:settings` | server URL, email, folder name, conflict policy, remember key, sync interval, auto-lock |
-| `bitwarden-secrets:state` | `deviceId`, `folderId`, `base` (per id: `cipherId`, `revisionDate`, `fingerprint`, `scope`), pending uploads and their scopes |
+| `keychain-bitwarden:settings` | server URL, email, folder name, conflict policy, remember key, sync interval, auto-lock |
+| `keychain-bitwarden:state` | `deviceId`, `folderId`, `base` (per id: `cipherId`, `revisionDate`, `fingerprint`, `scope`), pending uploads and their scopes |
 
 `data.json` is not used. It is routinely synced (Obsidian Sync, iCloud) or
 committed to Git. The audit showed that if `serverUrl` lived there, anyone
@@ -323,9 +325,9 @@ prefix:
 
 | SecretStorage id | Content |
 |---|---|
-| `bitwarden-secrets-client-id` / `-client-secret` | personal API key |
-| `bitwarden-secrets-api-origin` | identity origin the API key was entered for |
-| `bitwarden-secrets-user-key` | base64 user key, only when **Remember unlock on this device** is on |
+| `keychain-bitwarden-client-id` / `-client-secret` | personal API key |
+| `keychain-bitwarden-api-origin` | identity origin the API key was entered for |
+| `keychain-bitwarden-user-key` | base64 user key, only when **Remember unlock on this device** is on |
 
 ## 8. User interface
 
@@ -563,14 +565,14 @@ npm test                   # unit + multi-device
 npm run test:browser       # needs: npx playwright install chromium webkit
 npm run perf && npm run perf:browser
 
-docker run -d --rm --name bw-secrets-it -p 127.0.0.1:18080:80 \
+docker run -d --rm --name keychain-bw-it -p 127.0.0.1:18080:80 \
   -e SIGNUPS_ALLOWED=true -e SIGNUPS_VERIFY=false \
   -e LOGIN_RATELIMIT_MAX_BURST=1000 -e LOGIN_RATELIMIT_SECONDS=1 \
   -e I_REALLY_WANT_VOLATILE_STORAGE=true vaultwarden/server:latest
 BW_IT_URL=http://127.0.0.1:18080 npm run test:integration
-docker stop bw-secrets-it
+docker stop keychain-bw-it
 ```
 
 To install it manually in a vault, copy `main.js` and `manifest.json` into
-`<vault>/.obsidian/plugins/bitwarden-secrets/` and enable the plugin in
+`<vault>/.obsidian/plugins/keychain-bitwarden/` and enable the plugin in
 *Settings → Community plugins*.

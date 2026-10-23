@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-bitwarden-secrets",
+  "name": "obsidian-keychain-bitwarden",
   "version": "0.1.0",
   "description": "Obsidian plugin: sync SecretStorage with a Bitwarden folder",
   "scripts": {

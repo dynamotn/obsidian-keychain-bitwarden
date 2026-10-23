@@ -3,3 +3,4 @@ main.js
 coverage/
 .vitest-attachments/
 .scratch/
+__screenshots__/

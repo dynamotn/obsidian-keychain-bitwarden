@@ -213,10 +213,20 @@ describe("sync between devices", () => {
   });
 
   it("never lets Bitwarden overwrite the plugin's own credentials", async () => {
+    await server.addItem({ folder: "obsidian", name: "keychain-bitwarden-client-secret", value: "evil" });
+    const r = await a.controller.sync();
+    expect(r.pulled).toEqual([]);
+    expect(a.store.get("keychain-bitwarden-client-secret")).toBe(server.account.clientSecret);
+  });
+
+  it("keeps credentials left under the pre-rename prefix out of sync and uploads", async () => {
+    a.store.set("bitwarden-secrets-client-secret", "old-secret");
     await server.addItem({ folder: "obsidian", name: "bitwarden-secrets-client-secret", value: "evil" });
     const r = await a.controller.sync();
     expect(r.pulled).toEqual([]);
-    expect(a.store.get("bitwarden-secrets-client-secret")).toBe(server.account.clientSecret);
+    expect(a.store.get("bitwarden-secrets-client-secret")).toBe("old-secret");
+    expect(a.controller.uploadCandidates()).not.toContain("bitwarden-secrets-client-secret");
+    expect(() => a.controller.queueUpload("bitwarden-secrets-client-secret", { kind: "global" })).toThrow(/Cannot upload/);
   });
 
   it("skips undecryptable or invalid items without failing the sync", async () => {
@@ -358,7 +368,7 @@ describe("sync between devices", () => {
       await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/saved for https:\/\/bw\.test/);
       expect(server.requests).toHaveLength(0);
       d.controller.setApiKey("clientSecret", server.account.clientSecret);
-      expect(d.store.get("bitwarden-secrets-api-origin")).toBe("https://evil.example");
+      expect(d.store.get("keychain-bitwarden-api-origin")).toBe("https://evil.example");
     });
 
     it("prefers the folder it synced from when several share the name", async () => {
@@ -376,7 +386,7 @@ describe("sync between devices", () => {
       a.controller.lock();
       await expect(run).rejects.toThrow(/locked/);
       expect(a.controller.status).toBe("locked");
-      expect(a.store.list().filter((id) => id.startsWith("k"))).toEqual([]);
+      expect(a.store.list().filter((id) => /^k\d$/.test(id))).toEqual([]);
     });
 
     it("refuses a remembered key it cannot verify", async () => {

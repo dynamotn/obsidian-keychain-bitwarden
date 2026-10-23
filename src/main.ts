@@ -7,8 +7,8 @@ import { parseDeviceState, type DeviceState } from "./sync/state";
 import { ConflictModal, PickScopeModal, PickSecretModal, summarize, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
-const STATE_KEY = "bitwarden-secrets:state";
-const SETTINGS_KEY = "bitwarden-secrets:settings";
+const STATE_KEY = "keychain-bitwarden:state";
+const SETTINGS_KEY = "keychain-bitwarden:settings";
 
 const STATUS_TEXT: Record<Status, string> = {
   locked: "🔒 Bitwarden",
@@ -29,7 +29,7 @@ const obsidianHttp: HttpClient = async (req) => {
   return { status: res.status, text: res.text };
 };
 
-export default class BitwardenSecretsPlugin extends Plugin {
+export default class KeychainBitwardenPlugin extends Plugin {
   override settings: PluginSettings = { ...DEFAULT_SETTINGS };
 
   controller!: SecretsController;
@@ -158,8 +158,8 @@ export default class BitwardenSecretsPlugin extends Plugin {
       if (verbose || changed || report.conflicts.length || report.errors.length) {
         new Notice(`Bitwarden: ${summarize(report)}`);
       }
-      for (const err of report.errors) console.warn("[bitwarden-secrets]", err);
-      for (const s of report.skipped) console.info("[bitwarden-secrets] skipped", s.cipherId, s.reason);
+      for (const err of report.errors) console.warn("[keychain-bitwarden]", err);
+      for (const s of report.skipped) console.info("[keychain-bitwarden] skipped", s.cipherId, s.reason);
       if (report.conflicts.length && this.settings.conflictPolicy === "ask" && verbose) this.openConflicts();
     } catch (e) {
       new Notice(`Bitwarden: ${(e as Error).message}`, 10_000);
@@ -201,7 +201,7 @@ export default class BitwardenSecretsPlugin extends Plugin {
 class SettingsTab extends PluginSettingTab {
   constructor(
     app: App,
-    private readonly plugin: BitwardenSecretsPlugin,
+    private readonly plugin: KeychainBitwardenPlugin,
   ) {
     super(app, plugin);
   }

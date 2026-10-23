@@ -1,4 +1,4 @@
-# Bitwarden Secrets for Obsidian
+# Keychain Bitwarden for Obsidian
 
 **Type an API key once. Have it on every device.**
 
@@ -50,14 +50,16 @@ flowchart LR
 
 1. **Get a personal API key.** In the Bitwarden web vault, open
    *Settings → Security → Keys → View API key*.
-2. **Install the plugin.** It is not in the community store yet. Build it
-   (see [Development](#development)), copy `main.js` and `manifest.json` into
-   `<vault>/.obsidian/plugins/bitwarden-secrets/`, and enable it in
+2. **Install the plugin.** It is not in the community store yet. Either add
+   this repository in [BRAT](https://github.com/TfTHacker/obsidian42-brat),
+   which also keeps it up to date, or download `main.js` and `manifest.json`
+   from the latest release into
+   `<vault>/.obsidian/plugins/keychain-bitwarden/`. Then enable it in
    *Settings → Community plugins*.
 3. **Connect.** In the plugin settings, enter the server URL
    (`https://vault.bitwarden.com`, `https://vault.bitwarden.eu` or your own),
    your email, and the API key's `client_id` and `client_secret`.
-4. **Unlock.** Run **Bitwarden Secrets: Unlock** and enter your master
+4. **Unlock.** Run **Keychain Bitwarden: Unlock** and enter your master
    password. It only derives the decryption key on this device. The API key
    only authenticates.
 
@@ -137,7 +139,7 @@ npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (�
 npm run perf               # performance budgets (add :browser for WebKit/Chromium)
 
 # Against a real server, cross-checked with rbw and the official Bitwarden CLI:
-docker run -d --rm --name bw-secrets-it -p 127.0.0.1:18080:80 \
+docker run -d --rm --name keychain-bw-it -p 127.0.0.1:18080:80 \
   -e SIGNUPS_ALLOWED=true -e LOGIN_RATELIMIT_MAX_BURST=1000 -e LOGIN_RATELIMIT_SECONDS=1 \
   -e I_REALLY_WANT_VOLATILE_STORAGE=true vaultwarden/server:latest
 BW_IT_URL=http://127.0.0.1:18080 npm run test:integration
@@ -150,6 +152,12 @@ regenerate them:
 ```sh
 uv run --no-project --with cryptography --with argon2-cffi python test/fixtures/gen_vectors.py
 ```
+
+To release, set the new version in `manifest.json`, `package.json`,
+`versions.json` (mapped to `minAppVersion`) and `CLIENT_VERSION` in
+`src/bw/api.ts`, commit, and push a tag equal to it without a `v`, e.g.
+`git tag 0.2.0`. The release workflow checks that they all agree, runs the
+tests, and publishes `main.js` and `manifest.json`.
 
 Architecture, the sync algorithm, test results and performance figures are
 in [`docs/design.md`](docs/design.md).

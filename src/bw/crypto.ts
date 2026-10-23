@@ -110,7 +110,7 @@ export class SymmetricKey {
 
   /** A sub-key for purposes outside Bitwarden's own formats, domain-separated by `purpose`. */
   async deriveSubKey(purpose: string): Promise<Uint8Array<ArrayBuffer>> {
-    return hkdfExpand32(this.exportBytes().slice(32), `obsidian-bitwarden-secrets:${purpose}`);
+    return hkdfExpand32(this.exportBytes().slice(32), `obsidian-keychain-bitwarden:${purpose}`);
   }
 
   /** Best-effort zeroing; the CryptoKey objects are non-extractable and are dropped with this object. */

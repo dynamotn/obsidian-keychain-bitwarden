@@ -124,7 +124,7 @@ export interface DeviceInfo {
 
 // DeviceType.SDK in the Bitwarden server enum.
 const DEVICE_TYPE = "21";
-const CLIENT_NAME = "obsidian-bitwarden-secrets";
+const CLIENT_NAME = "obsidian-keychain-bitwarden";
 const CLIENT_VERSION = "0.1.0";
 
 /** Bitwarden used to answer in PascalCase; newer servers use camelCase. Accept both. */

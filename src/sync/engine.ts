@@ -26,7 +26,17 @@ import {
 import type { DeviceState } from "./state";
 
 /** Secrets the plugin keeps for itself; they never leave the device. */
-export const RESERVED_PREFIX = "bitwarden-secrets-";
+export const RESERVED_PREFIX = "keychain-bitwarden-";
+
+/**
+ * Prefix used before the plugin was renamed. Secret storage cannot delete, so
+ * old credentials stay on the device and must stay out of sync and uploads.
+ */
+const LEGACY_RESERVED_PREFIX = "bitwarden-secrets-";
+
+export function isReservedId(id: string): boolean {
+  return id.startsWith(RESERVED_PREFIX) || id.startsWith(LEGACY_RESERVED_PREFIX);
+}
 
 export interface SecretStore {
   get(id: string): string | null;
@@ -141,8 +151,8 @@ async function runPass(ctx: SyncContext, fp: ValueFingerprinter, report: SyncRep
 
   const byId = new Map<string, SecretRecord>();
   for (const rec of records) {
-    if (rec.id.startsWith(RESERVED_PREFIX)) {
-      report.skipped.push({ cipherId: rec.cipherId, reason: `ids starting with "${RESERVED_PREFIX}" are reserved` });
+    if (isReservedId(rec.id)) {
+      report.skipped.push({ cipherId: rec.cipherId, reason: `id "${rec.id}" is reserved for the plugin` });
       continue;
     }
     if (!scopeApplies(rec.scope, ctx.vaultName, state.deviceId)) continue;

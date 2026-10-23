@@ -6,7 +6,7 @@ import { decryptBytes, SymmetricKey } from "./bw/crypto";
 import { fromBase64, toBase64 } from "./bw/encoding";
 import type { HttpClient } from "./bw/http";
 import { formatScope, SECRET_ID_PATTERN, unlockUserKey, type Scope } from "./bw/vault";
-import { RESERVED_PREFIX, runSync, SyncAbortedError, type SecretStore, type SyncReport } from "./sync/engine";
+import { isReservedId, RESERVED_PREFIX, runSync, SyncAbortedError, type SecretStore, type SyncReport } from "./sync/engine";
 import type { ConflictOverride, ConflictPolicy } from "./sync/plan";
 import { resetDeviceState, type DeviceState } from "./sync/state";
 
@@ -243,13 +243,13 @@ export class SecretsController {
     const state = this.state();
     return this.deps.store
       .list()
-      .filter((id) => !id.startsWith(RESERVED_PREFIX) && !state.base[id] && !state.pendingCreates.includes(id))
+      .filter((id) => !isReservedId(id) && !state.base[id] && !state.pendingCreates.includes(id))
       .sort();
   }
 
   /** Queues a local secret for upload on the next sync. */
   queueUpload(id: string, scope: Scope): void {
-    if (!SECRET_ID_PATTERN.test(id) || id.startsWith(RESERVED_PREFIX)) throw new Error(`Cannot upload "${id}"`);
+    if (!SECRET_ID_PATTERN.test(id) || isReservedId(id)) throw new Error(`Cannot upload "${id}"`);
     if (this.deps.store.get(id) === null) throw new Error(`No local secret named "${id}"`);
     const state = this.state();
     if (!state.pendingCreates.includes(id)) state.pendingCreates.push(id);
