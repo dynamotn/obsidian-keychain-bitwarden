@@ -4,9 +4,12 @@ This document records how the plugin works, why it is built the
 way it is, and how it was verified. The user-facing summary is in
 [`README.md`](../README.md).
 
-- Follows the **dybw data model, version 1.1** (namespace `obsidian`), shared
+- Follows the **dybw data model, version 1.2** (namespace `obsidian`), shared
   with bwss and the other dybw tools in the `dybw` umbrella repository
-  (`docs/data-model.md`).
+  (`docs/data-model.md`). Version 1.2 adopted ADR 0009 (pull-only
+  organization bindings; the first push to an organization item is
+  confirmed per cipher) and ADR 0010 (a blank `obsidian:location` is absent;
+  stale notes are cleared once the value fits).
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
 - Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
