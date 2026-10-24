@@ -528,7 +528,7 @@ prefix:
 | Master password | Used only locally for the KDF; never sent, never stored |
 | User key | In memory while unlocked; optionally in SecretStorage (opt-in, with an explicit warning) |
 | Secret values on the wire | Only Bitwarden ciphertext leaves the device |
-| API key | Stored in SecretStorage; sent only to the identity origin it was entered for, and cleared when a login finds another origin configured; `https` required except on loopback |
+| API key | Stored in SecretStorage; sent only to the identity origin it was entered for; with another origin configured it is refused, not cleared, because the URL is saved per keystroke and data.json may be synced (the shared architecture says "cleared"); `https` required except on loopback |
 | Local edits | Never silently overwritten (race re-check, `local-unsynced` always asked, conflict choices tied to the conflict kind) |
 | Local secrets in general | Mass-clear guard; unreadable items are held, not cleared |
 | Personal secrets vs. organization items | Organization items are opt-in and never take over a personal item's id |

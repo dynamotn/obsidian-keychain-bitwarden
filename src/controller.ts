@@ -115,9 +115,10 @@ export class SecretsController {
     const boundTo = this.deps.store.get(SECRET_API_ORIGIN);
     const origin = this.identityOrigin();
     if (boundTo !== origin) {
-      // The server changed since the key was entered: forget it, so that no
-      // later setting, typo or edited config can send it anywhere.
-      for (const id of [SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SECRET_API_ORIGIN]) this.deps.store.set(id, "");
+      // Refused, not cleared: the server URL is saved on every keystroke and
+      // data.json may be synced from another device, so a passing mismatch
+      // must not cost the user their key. Refusing already keeps it from
+      // being sent anywhere else.
       throw new Error(
         `The API key was saved for ${boundTo || "another server"}, not ${origin}. ` +
           `Enter the API key again in the plugin settings to use it with this server.`,

@@ -649,18 +649,19 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(d.store.get("keychain-bitwarden-api-origin")).toBe("https://evil.example");
       });
 
-      it("clears the API key once it meets another server, so it is never sent there later", async () => {
+      it("keeps the API key through a passing change of server, sending it only to its own", async () => {
+        // The server URL is saved on every keystroke, and data.json may come from another device:
+        // a refusal is enough, and deleting the key would turn a typo into a forced re-entry.
         const d = makeDevice(server.http, server.account);
         d.settings.serverUrl = "https://evil.example";
-        await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/saved for https:\/\/bw\.test/);
-        expect(d.store.get("keychain-bitwarden-client-id")).toBe("");
-        expect(d.store.get("keychain-bitwarden-client-secret")).toBe("");
-        expect(d.store.get("keychain-bitwarden-api-origin")).toBe("");
-        // Switching back does not bring it back either: it has to be entered again.
-        d.settings.serverUrl = "https://bw.test";
         server.requests = [];
-        await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/Set the Bitwarden API key/);
+        await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/saved for https:\/\/bw\.test/);
         expect(server.requests).toHaveLength(0);
+        expect(d.store.get("keychain-bitwarden-client-secret")).toBe(server.account.clientSecret);
+        expect(d.store.get("keychain-bitwarden-api-origin")).toBe("https://bw.test");
+        d.settings.serverUrl = "https://bw.test";
+        await d.controller.unlock(server.account.password);
+        expect(d.controller.isUnlocked).toBe(true);
       });
 
       it("does not carry one part of the API key over to another server", async () => {
