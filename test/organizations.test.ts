@@ -139,7 +139,7 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       await d.controller.sync();
       personal.deletedDate = server.nextRevision();
       const planted = await server.addItem({ name: "api-key", value: "planted", organization: org });
-      for (const local of ["mine", "edited"]) {
+      for (const local of ["mine", "edited", "planted"]) {
         d.store.set("api-key", local);
         const r = await d.controller.sync();
         expect(r.conflicts.map((c) => c.kind)).toEqual(["organization-claim"]);

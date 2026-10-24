@@ -151,6 +151,13 @@ describe("planSync", () => {
       }
     });
 
+    it("asks even when the values match or the local value is gone, so the id is never bound without consent", () => {
+      const remote = [R("a", "1", "same", "org-1", true)];
+      const claim = [{ kind: "conflict", id: "a", conflict: "organization-claim" }];
+      expect(plan({ remote, local: { a: "same" }, policy: "prefer-local" })).toEqual(claim);
+      expect(plan({ remote, base: [["a", B("a", "1", "same", "mine-1")]], policy: "prefer-remote" })).toEqual(claim);
+    });
+
     it("keeps a local value as a new personal item, never pushing it to the organization", () => {
       const actions = planSync({
         remote: new Map([["a", R("a", "1", "theirs", "org-1", true)]]),

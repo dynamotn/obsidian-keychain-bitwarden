@@ -85,10 +85,13 @@ export function planSync(input: PlanInput): Action[] {
     const r = remote.get(id);
     const b = base.get(id);
     const l = local(id);
-    // An organization item other than the one this id was synced with.
+    // An organization item other than the one this id was synced with. Taking
+    // it binds the id to it, so later local edits would go to its members:
+    // only an empty, never-synced id may take it without asking, even when
+    // the values happen to match.
     const claimed = r?.organization === true && r.cipherId !== b?.cipherId;
 
-    if (r && claimed && l.fingerprint !== null && l.fingerprint !== r.fingerprint) {
+    if (r && claimed && (b || l.fingerprint !== null)) {
       actions.push(resolve(id, "organization-claim"));
       continue;
     }

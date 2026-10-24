@@ -111,8 +111,9 @@ organizations that carry an `obsidian:id` field:
 - A personal item always wins over an organization item with the same id.
 - An organization item that claims the id of a secret you already have
   (queued for upload, set locally, or synced from another item) is never
-  written to and never replaces your value silently: you are always asked,
-  whatever the conflict policy. Keeping yours uploads it as a personal item.
+  written to, never replaces your value and is never linked to it silently,
+  even with the same value: you are always asked, whatever the conflict
+  policy. Keeping yours uploads it as a personal item.
 - New uploads are always personal items.
 
 It is off by default: see [Security](#security) for why.

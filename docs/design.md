@@ -165,8 +165,10 @@ Rules:
   organization hides (`viewPassword: false`) are skipped.
 - **Organization claims**: an organization item whose id is new to this
   device, or that replaces the item an id was synced with, is *claiming*
-  the id. If the local value differs, the conflict `organization-claim` is
-  always asked, whatever the policy. "Keep mine" creates a personal item
+  the id. Unless the id is entirely new to this device (no base entry and
+  no local value), the conflict `organization-claim` is always asked,
+  whatever the policy, even when the values match: taking the item binds
+  the id to it, and later local edits would then go to its members. "Keep mine" creates a personal item
   (which then wins); a push only ever goes to the organization item that
   the base entry already names, and the engine refuses anything else.
 - **Excluded items**: unmarked items, trashed items (`deletedDate`), other
@@ -327,7 +329,7 @@ SecretStorage on this device:
 | gone | present | changed | conflict `deleted-remotely` → policy / user |
 | gone | present | missing | `forget` |
 | – | – | present, queued for upload | `create` |
-| organization item, cipher ≠ base | any | present, different from R | conflict `organization-claim`, **always asked**; "keep mine" = `create` a personal item |
+| organization item, cipher ≠ base | present, or – | present, or missing with a base | conflict `organization-claim`, **always asked**; "keep mine" = `create` a personal item |
 
 Notes on the table:
 
@@ -505,8 +507,9 @@ severity were fixed, each with a regression test (`test/sync.test.ts`,
 | 14 | High | Vault-wide scanning let any organization member claim an id: a pending upload, or a local edit after the personal item was deleted, was pushed into their item under `prefer-local` | Conflict `organization-claim`, always asked; "keep mine" creates a personal item; pushes go only to the organization item already in the base |
 | 15 | Medium | An organization item replacing a deleted personal item was pulled silently | Same `organization-claim` conflict |
 | 16 | Medium | Re-entering only the client id after changing the server rebound the stored client secret to the new server | Rebinding to another server clears the other part |
+| 17 | Medium | An organization item holding the same value was adopted, or one replacing a synced item was pulled onto a device that had lost the value, binding the id to it without asking | `organization-claim` whenever a base entry or a local value exists, whatever the values |
 
-Findings 14 to 16 come from a second review, after the move to vault-wide
+Findings 14 to 17 come from a second review, after the move to vault-wide
 scanning (`test/plan.test.ts`, `test/organizations.test.ts`,
 `test/sync.test.ts`).
 
@@ -555,8 +558,8 @@ Static analysis:
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **331 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **666 passed** (333 × 2) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **332 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **668 passed** (334 × 2) |
 | Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
 | Real server + independent clients | `npm run test:integration` | **12 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
