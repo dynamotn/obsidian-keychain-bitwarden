@@ -4,6 +4,9 @@ This document records how the plugin works, why it is built the
 way it is, and how it was verified. The user-facing summary is in
 [`README.md`](../README.md).
 
+- Follows the **dybw data model, version 1** (namespace `obsidian`), shared
+  with bwss and the other dybw tools in the `dybw` umbrella repository
+  (`docs/data-model.md`).
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
 - Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
