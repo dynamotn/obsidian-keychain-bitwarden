@@ -66,6 +66,24 @@ describe("parseDeviceState", () => {
     expect(parseDeviceState("garbage").deviceId).toMatch(/[0-9a-f-]{36}/);
   });
 
+  it("drops ids that break the id rule or are reserved for the plugin", () => {
+    const entry = { cipherId: "c", revisionDate: "r", fingerprint: "f" };
+    const bad = ["Upper", "a--b", "-a", "", "keychain-bitwarden-client-secret", "bitwarden-secrets-client-id", "__proto__"];
+    const raw = {
+      version: 1,
+      deviceId: "d1",
+      base: Object.fromEntries([["ok-1", entry], ...bad.map((id) => [id, entry])]),
+      pendingCreates: ["ok-2", ...bad],
+      pendingScopes: Object.fromEntries([["ok-2", "global"], ...bad.map((id) => [id, "global"])]),
+    };
+    // As read back from localStorage, where a key named __proto__ is an own property.
+    const s = parseDeviceState(JSON.parse(JSON.stringify(raw)));
+    expect(Object.keys(s.base)).toEqual(["ok-1"]);
+    expect(s.pendingCreates).toEqual(["ok-2"]);
+    expect(Object.keys(s.pendingScopes)).toEqual(["ok-2"]);
+    expect(Object.getPrototypeOf(s.base)).toBe(Object.prototype);
+  });
+
   it("keeps a confirmation to push to an organization item, and only a true one", () => {
     const entry = { cipherId: "c", revisionDate: "r", fingerprint: "f" };
     const s = parseDeviceState({

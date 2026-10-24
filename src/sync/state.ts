@@ -3,6 +3,8 @@
 // and a base state copied to another device would make that device believe its
 // (still empty) secrets were deleted or edited.
 
+import { SECRET_ID_PATTERN } from "../bw/vault";
+import { isReservedId } from "./engine";
 import type { BaseEntry } from "./plan";
 
 export interface DeviceState {
@@ -25,6 +27,8 @@ export function newDeviceState(): DeviceState {
 }
 
 const isStr = (v: unknown): v is string => typeof v === "string";
+/** A secret this plugin may sync: the stored state is only as trustworthy as the localStorage holding it. */
+const isSyncedId = (id: unknown): id is string => isStr(id) && SECRET_ID_PATTERN.test(id) && !isReservedId(id);
 
 /** Accepts only a well-formed state; anything else starts fresh but keeps the device id. */
 export function parseDeviceState(raw: unknown): DeviceState {
@@ -36,6 +40,7 @@ export function parseDeviceState(raw: unknown): DeviceState {
   const base: Record<string, BaseEntry> = {};
   if (r.base && typeof r.base === "object") {
     for (const [id, e] of Object.entries(r.base as Record<string, unknown>)) {
+      if (!isSyncedId(id)) continue;
       const entry = e as Record<string, unknown> | null;
       if (entry && isStr(entry.cipherId) && isStr(entry.revisionDate) && isStr(entry.fingerprint)) {
         const parsed: BaseEntry = { cipherId: entry.cipherId, revisionDate: entry.revisionDate, fingerprint: entry.fingerprint };
@@ -47,13 +52,15 @@ export function parseDeviceState(raw: unknown): DeviceState {
   }
   const pendingScopes: Record<string, string> = {};
   if (r.pendingScopes && typeof r.pendingScopes === "object") {
-    for (const [id, s] of Object.entries(r.pendingScopes as Record<string, unknown>)) if (isStr(s)) pendingScopes[id] = s;
+    for (const [id, s] of Object.entries(r.pendingScopes as Record<string, unknown>)) {
+      if (isSyncedId(id) && isStr(s)) pendingScopes[id] = s;
+    }
   }
   return {
     version: 1,
     deviceId: fresh.deviceId,
     base,
-    pendingCreates: Array.isArray(r.pendingCreates) ? r.pendingCreates.filter(isStr) : [],
+    pendingCreates: Array.isArray(r.pendingCreates) ? r.pendingCreates.filter(isSyncedId) : [],
     pendingScopes,
   };
 }
