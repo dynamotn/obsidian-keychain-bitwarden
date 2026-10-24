@@ -622,6 +622,23 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(a.store.get("k1")).toBe("v");
       });
 
+      it("refuses to clear exactly half of the secrets at once", async () => {
+        const items = [];
+        for (const n of ["k1", "k2", "k3", "k4"]) items.push(await server.addItem({ name: n, value: "v" }));
+        await a.controller.sync();
+        for (const c of items.slice(0, 2)) c.deletedDate = server.nextRevision();
+        await expect(a.controller.sync()).rejects.toThrow(/2 of 4 synced secrets would be cleared/);
+        expect(a.store.get("k1")).toBe("v");
+      });
+
+      it("still clears one secret deleted on its own", async () => {
+        const items = [];
+        for (const n of ["k1", "k2"]) items.push(await server.addItem({ name: n, value: "v" }));
+        await a.controller.sync();
+        items[0]!.deletedDate = server.nextRevision();
+        expect((await a.controller.sync()).cleared).toEqual(["k1"]);
+      });
+
       it("only sends the API key to the server it was entered for", async () => {
         const d = makeDevice(server.http, server.account);
         d.settings.serverUrl = "https://evil.example";

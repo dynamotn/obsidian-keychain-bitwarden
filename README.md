@@ -36,7 +36,7 @@ flowchart LR
   "I edited this here" apart from "it changed in Bitwarden". Real conflicts
   are shown to you, and secrets are never displayed in the conflict dialog.
 - **It stops instead of wiping your secrets.** Sync aborts instead of
-  clearing anything when it would lose more than half of your secrets at
+  clearing anything when it would lose half of your secrets or more at
   once, and an item that merely became unreadable is kept, not cleared.
 - **Organize Bitwarden as you like.** Marked items are found anywhere in the
   vault, in any folder or none, so moving them around changes nothing.

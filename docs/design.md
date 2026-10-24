@@ -403,7 +403,7 @@ Notes on the table:
    include a newer format, a rename to an invalid id, a move to an
    organization, or a scope change. An item whose `obsidian:id` field was
    removed is readable and unmarked, so it counts as deleted.
-4. **Mass-clear guard**: if more than one secret, and more than half of the
+4. **Mass-clear guard**: if more than one secret, and at least half of the
    base, would be cleared in one pass, the run aborts. This covers a wrong
    account, a half-finished migration, or a hostile server.
 5. **Plan**, then apply action by action, persisting state after each one.

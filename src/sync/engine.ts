@@ -251,7 +251,7 @@ async function runPass(
   // Clearing many secrets at once is almost always a mistake (wrong
   // account, a half-finished migration, a hostile server) rather than intent.
   const clears = actions.filter((a) => a.kind === "clear-local").length;
-  if (clears > 1 && clears * 2 > base.size) {
+  if (clears > 1 && clears * 2 >= base.size) {
     throw new SyncAbortedError(
       `${clears} of ${base.size} synced secrets would be cleared because they disappeared from Bitwarden; ` +
         `refusing. Restore them in Bitwarden, or reset the sync state if this is intended.`,
