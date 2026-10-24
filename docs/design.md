@@ -193,7 +193,11 @@ Rules:
     with `obsidian:location=notes`, when the notes are empty or already
     marked that way; every `obsidian:password` field is then removed, so a
     duplicate cannot become the value source. Otherwise the write fails:
-    the notes hold the user's own text;
+    the notes hold the user's own text. Only the value `notes` marks them;
+    an empty or blank `obsidian:location` claims nothing;
+  - a value in `obsidian:password` that still fits, on an item whose notes
+    are marked `obsidian:location=notes`, clears those notes and the mark:
+    they can only hold an older copy of the secret;
   - a new upload that does not fit a field is created with the value in its
     (empty) notes and `obsidian:location=notes`;
   - a value already in the notes stays there, even when it shrinks;

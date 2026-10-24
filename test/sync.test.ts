@@ -343,6 +343,63 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         for (const c of [note, login, big]) expect(server.ciphers.find((x) => x.id === c.id)!.revisionDate).toBe(c.revisionDate);
       });
 
+      it.each([
+        ["empty", ""],
+        ["whitespace", "  \t"],
+      ])("never overwrite the user's notes when obsidian:location is %s", async (_kind, location) => {
+        const note = await server.addItem({
+          name: "note",
+          value: "token",
+          defaultValue: "my own notes",
+          extraFields: [["obsidian:location", location]],
+        });
+        await a.controller.sync();
+        expect(a.store.get("note")).toBe("token");
+        const before = structuredClone(server.ciphers);
+        a.store.set("note", long);
+        const r = await a.controller.sync();
+        expect(r.pushed).toEqual([]);
+        expect(r.errors).toEqual([expect.stringMatching(/^note: the value is too long for a field .*the notes hold your own text$/)]);
+        expect(server.ciphers).toEqual(before);
+        expect(await decryptString(server.ciphers.find((x) => x.id === note.id)!.notes!, server.account.userKey)).toBe(
+          "my own notes",
+        );
+      });
+
+      it("move into empty notes over an empty obsidian:location, setting it to notes", async () => {
+        const c = await server.addItem({ name: "db", value: "token", defaultValue: "", extraFields: [["obsidian:location", ""]] });
+        c.notes = null;
+        await a.controller.sync();
+        a.store.set("db", long);
+        expect((await a.controller.sync()).pushed).toEqual(["db"]);
+        const fields = await fieldsOf(c.id);
+        expect(fields.filter(([n]) => n === "obsidian:location")).toEqual([["obsidian:location", "notes"]]);
+        expect(fields.map(([n]) => n)).not.toContain("obsidian:password");
+        expect(await decryptString(server.ciphers.find((x) => x.id === c.id)!.notes!, server.account.userKey)).toBe(long);
+      });
+
+      it("clear a stale copy in the notes when a value from obsidian:password fits again", async () => {
+        // Another client left the old secret in the notes, marked as this tool's, next to an obsidian:password field.
+        const c = await server.addItem({
+          name: "db",
+          value: "token",
+          defaultValue: "old secret",
+          extraFields: [["obsidian:location", "notes"]],
+        });
+        await a.controller.sync();
+        expect(a.store.get("db")).toBe("token");
+        a.store.set("db", "new token");
+        expect((await a.controller.sync()).pushed).toEqual(["db"]);
+        const after = server.ciphers.find((x) => x.id === c.id)!;
+        expect(after.notes).toBeNull();
+        const fields = await fieldsOf(c.id);
+        expect(fields).toContainEqual(["obsidian:password", "new token"]);
+        expect(fields.map(([n]) => n)).not.toContain("obsidian:location");
+        expect(fields).toContainEqual(["unrelated", "keep me"]);
+        expect((await b.controller.sync()).pulled).toEqual(["db"]);
+        expect(b.store.get("db")).toBe("new token");
+      });
+
       it("refuse an upload too long even for the notes, and keep it queued", async () => {
         a.store.set("huge", huge);
         a.controller.queueUpload("huge", { kind: "global" });

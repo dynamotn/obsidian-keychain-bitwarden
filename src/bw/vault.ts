@@ -58,8 +58,10 @@ export interface SecretRecord {
   value: string;
   scope: Scope;
   source: ValueSource;
-  /** Index of the `obsidian:location` field, if any. */
+  /** Index of the `obsidian:location` field, if any, whatever its value. */
   locationField: number | null;
+  /** `notes` only when that field says the notes hold this plugin's value; an empty field claims nothing. */
+  location: "notes" | null;
   /** Set for organization items; such items are encrypted with the organization's key. */
   organizationId: string | null;
   /** The organization does not let this user change the item. */
@@ -272,6 +274,7 @@ export async function readVault(
         scope,
         source,
         locationField: locationField?.index ?? null,
+        location: location === "notes" ? "notes" : null,
         organizationId: cipher.organizationId ?? null,
         readOnly: Boolean(cipher.organizationId) && cipher.edit === false,
         cipher,
@@ -418,9 +421,14 @@ export async function updateValueRequest(
       if ((encValue?.length ?? 0) <= FIELD_LIMIT) {
         // The value lives in the obsidian:password field; the rest of the item is untouched.
         req.fields = req.fields.map((f, i) => (i === source.indexes[0] ? { ...f, value: encValue } : f));
+        if (record.location === "notes") {
+          // The notes are marked as this plugin's, so they hold an older copy of the secret: drop it and the mark.
+          req.notes = null;
+          req.fields = req.fields.filter((_, i) => i !== record.locationField);
+        }
       } else {
         // Too long for a field: the notes may take it only if they hold nothing of the user's.
-        if (c.notes && record.locationField === null) {
+        if (c.notes && record.location !== "notes") {
           throw new ValueTooLongError(
             `the value is too long for a field (${encValue!.length.toLocaleString("en")} encrypted characters, ` +
               `at most ${FIELD_LIMIT.toLocaleString("en")}), and the notes hold your own text`,
