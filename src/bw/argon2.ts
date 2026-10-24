@@ -53,6 +53,36 @@ export const argon2InThread: Argon2Runner = async (input, signal) => {
   return new Uint8Array(out);
 };
 
+/** Too heavy to derive on the main thread, where nothing can stop it. */
+export class KdfTooHeavyError extends Error {
+  override name = "KdfTooHeavyError";
+  constructor(memoryKiB: number, maxKiB: number) {
+    super(
+      `This device cannot derive the key in the background, and the account's Argon2 memory ` +
+        `(${Math.round(memoryKiB / 1024)} MiB) would freeze Obsidian while it runs; at most ` +
+        `${Math.round(maxKiB / 1024)} MiB is derived in the foreground. Lower the KDF memory in Bitwarden to unlock here.`,
+    );
+  }
+}
+
+/** Above this the main-thread fallback refuses: twice Bitwarden's default of 64 MiB. */
+export const IN_THREAD_MAX_MEMORY_KIB = 128 * 1024;
+
+/**
+ * Like `argon2InThread`, for when no worker can run: a derivation on the main
+ * thread can be neither aborted nor timed out, so a heavy one is refused
+ * up front instead of freezing the app.
+ */
+export function argon2InThreadUpTo(maxMemoryKiB: number): Argon2Runner {
+  return (input, signal) => {
+    if (input.memoryKiB > maxMemoryKiB) {
+      input.password.fill(0);
+      return Promise.reject(new KdfTooHeavyError(input.memoryKiB, maxMemoryKiB));
+    }
+    return argon2InThread(input, signal);
+  };
+}
+
 // --- Worker protocol ---------------------------------------------------------
 
 export interface WorkerRequest {

@@ -204,6 +204,8 @@ The full threat model, the security review and its fixes are in
   empty value here.
 - A very expensive Argon2 setting (close to the 1 GiB maximum Bitwarden
   allows) still takes a while on a phone, and is stopped after two minutes.
+  Where no background worker can start, an Argon2 memory above 128 MiB is
+  refused instead of freezing Obsidian.
 
 ## Development
 

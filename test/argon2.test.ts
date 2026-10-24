@@ -2,7 +2,9 @@ import { beforeAll, describe, expect, inject, it, vi } from "vitest";
 import vectors from "./fixtures/vectors.json";
 import {
   argon2InThread,
+  argon2InThreadUpTo,
   argon2InWorker,
+  KdfTooHeavyError,
   KdfAbortedError,
   KdfTimeoutError,
   type Argon2Input,
@@ -112,6 +114,23 @@ describe("Argon2 in a worker", () => {
     });
     expect([...(await run(input()))]).toEqual(new Array(32).fill(9));
     expect(fallback).toHaveBeenCalledOnce();
+  });
+
+  it("refuses, rather than freezes the app, a heavy derivation it would have to run on the main thread", async () => {
+    const heavy = { ...input(), memoryKiB: 129 * 1024 };
+    const run = argon2InWorker({
+      spawn: () => {
+        throw new Error("blocked");
+      },
+      timeoutMs: 10_000,
+      fallback: argon2InThreadUpTo(128 * 1024),
+    });
+    const started = performance.now();
+    await expect(run(heavy)).rejects.toBeInstanceOf(KdfTooHeavyError);
+    await expect(run(heavy)).rejects.toThrow(/129 MiB.*at most 128 MiB/);
+    expect(performance.now() - started).toBeLessThan(500);
+    // A lighter one still runs.
+    expect(await run(input())).toHaveLength(32);
   });
 
   // Only browsers can start the real worker; WebKit and Chromium stand in for

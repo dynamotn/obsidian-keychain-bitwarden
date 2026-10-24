@@ -284,7 +284,9 @@ in a **Web Worker**:
 - A lock that arrives while the key is being derived wins: the derived key
   is wiped instead of unlocking.
 - When a worker cannot be started at all, the derivation falls back to the
-  main thread.
+  main thread, where it can be neither aborted nor timed out. The fallback
+  therefore refuses an Argon2 memory above 128 MiB (twice Bitwarden's
+  default) with an explanation, instead of freezing Obsidian.
 
 ### Ciphertexts (`crypto.ts`)
 

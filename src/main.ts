@@ -1,6 +1,6 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting } from "obsidian";
 import argon2WorkerSource from "virtual:argon2-worker";
-import { argon2InThread, argon2InWorker, type Argon2Runner } from "./bw/argon2";
+import { argon2InThreadUpTo, argon2InWorker, IN_THREAD_MAX_MEMORY_KIB, type Argon2Runner } from "./bw/argon2";
 import type { HttpClient } from "./bw/http";
 import { NotificationHub } from "./bw/notifications";
 import { SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SecretsController, type Status } from "./controller";
@@ -138,10 +138,11 @@ export default class KeychainBitwardenPlugin extends Plugin {
 
   /** Argon2id in a worker started from the embedded source, so unlocking never freezes Obsidian. */
   private argon2Runner(): Argon2Runner {
-    if (typeof Worker === "undefined") return argon2InThread;
+    const inThread = argon2InThreadUpTo(IN_THREAD_MAX_MEMORY_KIB);
+    if (typeof Worker === "undefined") return inThread;
     const url = URL.createObjectURL(new Blob([argon2WorkerSource], { type: "text/javascript" }));
     this.register(() => URL.revokeObjectURL(url));
-    return argon2InWorker({ spawn: () => new Worker(url), timeoutMs: ARGON2_TIMEOUT_MS, fallback: argon2InThread });
+    return argon2InWorker({ spawn: () => new Worker(url), timeoutMs: ARGON2_TIMEOUT_MS, fallback: inThread });
   }
 
   private loadDeviceState(): DeviceState {
