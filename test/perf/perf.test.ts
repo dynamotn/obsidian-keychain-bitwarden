@@ -4,7 +4,7 @@
 // Budgets are deliberately loose: they catch order-of-magnitude regressions,
 // not noise. Timings are printed so they can be recorded in docs/.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, type TaskMeta } from "vitest";
 import { deriveMasterKey, encryptString, KdfType, SymmetricKey } from "../../src/bw/crypto";
 import { readVault } from "../../src/bw/vault";
 import type { CipherDto, SyncDto } from "../../src/bw/api";
@@ -15,14 +15,20 @@ import { makeDevice } from "../helpers/device";
 const engine = typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "node";
 const label = /AppleWebKit/.test(engine) && !/Chrome/.test(engine) ? "webkit" : /Chrome/.test(engine) ? "chromium" : "node";
 
-type Task = { meta: Record<string, unknown> };
+declare module "vitest" {
+  interface TaskMeta {
+    perf?: string[];
+  }
+}
+
+type Task = { readonly meta: TaskMeta };
 
 async function time<T>(task: Task, name: string, fn: () => Promise<T> | T, budgetMs: number): Promise<T> {
   const t0 = performance.now();
   const out = await fn();
   const ms = performance.now() - t0;
   // Browser runs do not forward console output; task meta reaches the JSON reporter.
-  const lines = (task.meta.perf as string[] | undefined) ?? [];
+  const lines = task.meta.perf ?? [];
   lines.push(`[perf:${label}] ${name}: ${ms.toFixed(1)} ms (budget ${budgetMs} ms)`);
   task.meta.perf = lines;
   expect(ms).toBeLessThan(budgetMs);

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Obsidian plugin: sync SecretStorage with a Bitwarden folder",
   "scripts": {
-    "typecheck": "node node_modules/typescript-native/bin/tsc -p .",
+    "typecheck": "node node_modules/typescript-native/bin/tsc -p . && node node_modules/typescript-native/bin/tsc -p tsconfig.test.json",
     "build": "npm run typecheck && node esbuild.config.mjs --production",
     "dev": "node esbuild.config.mjs",
     "lint": "eslint .",
