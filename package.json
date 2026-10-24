@@ -1,0 +1,46 @@
+{
+  "name": "obsidian-keychain-bitwarden",
+  "version": "0.1.0",
+  "description": "Obsidian plugin: sync SecretStorage with a Bitwarden folder",
+  "scripts": {
+    "typecheck": "node node_modules/typescript-native/bin/tsc -p .",
+    "build": "npm run typecheck && node esbuild.config.mjs --production",
+    "dev": "node esbuild.config.mjs",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "test:browser": "vitest run -c vitest.browser.config.ts",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "perf": "vitest run -c vitest.perf.config.ts",
+    "perf:browser": "PERF_BROWSER=1 vitest run -c vitest.perf.config.ts",
+    "test:sdk": "BW_SDK_VERIFY=1 vitest run test/sdk"
+  },
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@bitwarden/cli": "2026.10.0",
+    "@eslint/js": "9.39.5",
+    "@eslint/json": "0.14.0",
+    "@types/node": "26.6.5",
+    "@vitest/browser-playwright": "4.1.12",
+    "esbuild": "0.28.2",
+    "eslint": "10.13.0",
+    "eslint-plugin-obsidianmd": "0.4.2",
+    "obsidian": "1.14.4",
+    "playwright": "1.64.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0",
+    "typescript-native": "npm:typescript@7.0.2",
+    "vitest": "4.1.12"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "hash-wasm": "4.12.0"
+  },
+  "private": true,
+  "overrides": {
+    "eslint-plugin-obsidianmd": {
+      "obsidian": "$obsidian"
+    }
+  }
+}

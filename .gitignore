@@ -1,0 +1,7 @@
+node_modules/
+main.js
+coverage/
+.vitest-attachments/
+.scratch/
+__screenshots__/
+test/fixtures/sdk-vectors/target/

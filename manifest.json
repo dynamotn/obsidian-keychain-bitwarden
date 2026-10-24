@@ -1,0 +1,9 @@
+{
+  "id": "keychain-bitwarden",
+  "name": "Keychain Bitwarden",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Sync Obsidian's secret storage with a folder in your Bitwarden vault, across every device.",
+  "author": "Trần Đức Nam",
+  "isDesktopOnly": false
+}
