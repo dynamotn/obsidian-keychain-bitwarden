@@ -178,10 +178,12 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     expect(a.store.get("v2-key")).toBe("edited on B");
     // What reached the server really is type 7.
     const sync = (await (await fetch(`${URL_}/api/sync`, { headers: { Authorization: `Bearer ${v2.accessToken}` } })).json()) as {
-      ciphers: { notes: string; name: string }[];
+      ciphers: { notes: string | null; name: string; fields: { name: string; value: string | null }[] }[];
       folders: { name: string }[];
     };
-    expect(sync.ciphers.every((c) => c.notes.startsWith("7.") && c.name.startsWith("7."))).toBe(true);
+    const isV2 = (s: string | null) => s === null || s.startsWith("7.");
+    expect(sync.ciphers.every((c) => c.name.startsWith("7.") && isV2(c.notes))).toBe(true);
+    expect(sync.ciphers.every((c) => c.fields.length > 0 && c.fields.every((f) => isV2(f.name) && isV2(f.value)))).toBe(true);
     expect(sync.folders.every((f) => f.name.startsWith("7."))).toBe(true);
   });
 
@@ -204,7 +206,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       // rbw's agent loads organization keys only when it unlocks; earlier tests
       // add an organization, so make it unlock again (through the fake pinentry).
       rbw(["lock"]);
-      expect(rbw(["get", "--folder", "obsidian", "from-plugin"])).toBe("plugin value ✓");
+      expect(rbw(["get", "--folder", "obsidian", "--field", "obsidian:password", "from-plugin"])).toBe("plugin value ✓");
     });
   });
 
@@ -312,10 +314,13 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       await a.controller.sync();
       await bw(["sync"]);
       const item = (JSON.parse(await bw(["list", "items", "--search", "plugin-note"])) as Record<string, any>[])[0]!;
-      expect(item.notes).toBe("line 1\nline 2");
+      // New secrets live in their own field and leave the notes to the user.
+      expect(item.notes ?? null).toBeNull();
+      const field = (item.fields as { name: string; value: string; type: number }[]).find((f) => f.name === "obsidian:password")!;
+      expect(field).toMatchObject({ value: "line 1\nline 2", type: 1 });
       expect(item.fields).toContainEqual(expect.objectContaining({ name: "obsidian:scope", value: "vault:notes" }));
 
-      item.notes = "edited in bw";
+      field.value = "edited in bw";
       await bw(["edit", "item", item.id, Buffer.from(JSON.stringify(item)).toString("base64")]);
       expect((await a.controller.sync()).pulled).toEqual(["plugin-note"]);
       expect(a.store.get("plugin-note")).toBe("edited in bw");

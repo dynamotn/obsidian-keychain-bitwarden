@@ -140,10 +140,17 @@ async function loadOrganizationKeys(
   return keys;
 }
 
-/** Of two items claiming the same id, personal items win over organization items, then the newest. */
+/**
+ * Of two items claiming the same id, personal items win over organization
+ * items, then the oldest, then the lowest cipher id. Creation dates never
+ * change, so every device keeps choosing the same item however it is edited.
+ */
 function preferred(a: SecretRecord, b: SecretRecord): [keep: SecretRecord, drop: SecretRecord] {
   if (!a.organizationId !== !b.organizationId) return a.organizationId ? [b, a] : [a, b];
-  return a.revisionDate >= b.revisionDate ? [a, b] : [b, a];
+  // An item without a creation date (older servers) sorts last.
+  const created = (r: SecretRecord) => r.cipher.creationDate || "\uffff";
+  if (created(a) !== created(b)) return created(a) < created(b) ? [a, b] : [b, a];
+  return a.cipherId <= b.cipherId ? [a, b] : [b, a];
 }
 
 function checkCancelled(ctx: SyncContext) {
@@ -192,7 +199,7 @@ async function runPass(
         reason:
           drop.organizationId && !keep.organizationId
             ? `duplicate of "${rec.id}"; the personal item is used`
-            : `duplicate of "${rec.id}"; the newest item is used`,
+            : `duplicate of "${rec.id}"; the oldest item is used`,
       });
       continue;
     }

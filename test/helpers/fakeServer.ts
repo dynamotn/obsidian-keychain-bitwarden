@@ -173,6 +173,7 @@ export class FakeBitwardenServer {
       secureNote: type === 2 ? { type: 0 } : null,
       key: wrappedKey,
       revisionDate: this.nextRevision(),
+      creationDate: this.nextRevision(),
       deletedDate: null,
       ...(opts.organization ? { edit: opts.edit ?? true, viewPassword: opts.viewPassword ?? true } : {}),
     };
@@ -266,7 +267,8 @@ export class FakeBitwardenServer {
       return json(200, folder);
     }
     if (path === "/api/ciphers" && req.method === "POST") {
-      const cipher = { ...this.toCipher(body!), id: crypto.randomUUID(), revisionDate: this.nextRevision() };
+      const now = this.nextRevision();
+      const cipher = { ...this.toCipher(body!), id: crypto.randomUUID(), revisionDate: now, creationDate: now };
       this.ciphers.push(cipher);
       return json(200, cipher);
     }
@@ -302,6 +304,7 @@ export class FakeBitwardenServer {
         ...this.toCipher(body!),
         id: current.id,
         revisionDate: this.nextRevision(),
+        creationDate: current.creationDate ?? null,
         // Computed by the server from the user's rights, not sent by clients.
         ...(current.organizationId ? { edit: current.edit, viewPassword: current.viewPassword } : {}),
       };

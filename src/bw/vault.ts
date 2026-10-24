@@ -257,7 +257,11 @@ async function obsidianFields(
   return found;
 }
 
-/** Builds a request for a new secure note holding one secret. */
+/**
+ * Builds a request for a new secure note holding one secret. The value goes
+ * into an `obsidian:password` field, never the notes: notes and passwords are
+ * the user's, and a new item must leave them free.
+ */
 export async function newSecretRequest(
   userKey: SymmetricKey,
   folderId: string | null,
@@ -267,6 +271,11 @@ export async function newSecretRequest(
 ): Promise<CipherRequest> {
   const fields: FieldDto[] = [
     { type: 0, name: await encryptString(FIELD_ID, userKey), value: await encryptString(id, userKey) },
+    {
+      type: 1,
+      name: await encryptString(FIELD_PASSWORD, userKey),
+      value: value === "" ? null : await encryptString(value, userKey),
+    },
   ];
   if (scope.kind !== "global") {
     fields.push({
@@ -280,7 +289,7 @@ export async function newSecretRequest(
     folderId,
     organizationId: null,
     name: await encryptString(id, userKey),
-    notes: value === "" ? null : await encryptString(value, userKey),
+    notes: null,
     fields,
     favorite: false,
     reprompt: 0,

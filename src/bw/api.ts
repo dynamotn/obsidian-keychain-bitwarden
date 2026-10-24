@@ -81,6 +81,8 @@ export interface CipherDto {
   favorite?: boolean;
   reprompt?: number;
   revisionDate: string;
+  /** Set by the server when the item is created and never changed; decides between duplicate ids. */
+  creationDate?: string | null;
   deletedDate?: string | null;
   /** Organization items only: false when the user may not change the item. */
   edit?: boolean;

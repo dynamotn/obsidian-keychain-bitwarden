@@ -9,7 +9,7 @@ way it is, and how it was verified. The user-facing summary is in
 - Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
   (XChaCha20-Poly1305). Everything else is WebCrypto, Web Workers, WebSocket
   and the Obsidian API.
-- Bundle: one 124.1 KiB `main.js` (production build), with the Argon2
+- Bundle: one 124.2 KiB `main.js` (production build), with the Argon2
   worker embedded in it. Its only import is `obsidian`.
 
 ## Contents
@@ -157,8 +157,11 @@ Rules:
   `bitwarden-secrets-`, stays reserved too: secret storage cannot delete, so
   credentials saved before the rename remain on the device.
 - **Duplicates**: if two items carry the same id, a personal item wins over
-  an organization item; otherwise the newest `revisionDate` wins. The other
-  is reported.
+  an organization item, then the oldest `creationDate`, then the lowest
+  cipher id. The others are reported. Creation dates never change, so every
+  device keeps choosing the same item however the items are edited (the
+  usual cause is "Clone item", which copies the marker). This is the rule of
+  the shared dybw data model.
 - **Organization items** are read only when *Sync organization items* is
   on. They are decrypted with their organization's key, items the user may
   not edit (`edit: false`) are only pulled, and items whose password the
@@ -174,8 +177,10 @@ Rules:
 - **Excluded items**: unmarked items, trashed items (`deletedDate`), other
   item types (cards, identities, SSH keys; reported when marked), and
   organization items unless enabled (not decrypted, so not reported).
-- **New uploads** are secure notes holding the `obsidian:id` field, plus
-  `obsidian:scope` when it is not global. They are filed in the *Folder for
+- **New uploads** are secure notes with empty notes, holding the
+  `obsidian:id` field, the value in a hidden `obsidian:password` field, plus
+  `obsidian:scope` when it is not global. A new secret never goes into the
+  user's own password or notes. They are filed in the *Folder for
   uploads* setting (default `obsidian`; empty means no folder). Among folders
   of that name the lowest id is used, so all devices agree; one is created
   if none exists.
@@ -558,8 +563,8 @@ Static analysis:
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **332 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **668 passed** (334 × 2) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **335 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **674 passed** (337 × 2) |
 | Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
 | Real server + independent clients | `npm run test:integration` | **12 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
@@ -659,7 +664,7 @@ The setup:
 - An **Argon2id account** unlocks and uploads.
 - Accounts on the **newer encryption** (XAES-256-GCM and XChaCha20-Poly1305
   user keys): two devices upload, pull and edit, and everything the server
-  stores (item names, notes, folder names) is type 7. The official CLI
+  stores (item names, custom fields, folder names) is type 7. The official CLI
   cannot be used here: it refuses these test accounts, which lack the
   signing keys a real v2 account also has; the SDK check above covers the
   format instead.

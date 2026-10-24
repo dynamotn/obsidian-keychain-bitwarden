@@ -34,6 +34,10 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
     const c = server.ciphers.find((x) => x.id === cipherId)!;
     let key = server.account.userKey;
     if (c.key) key = await unwrapKey(c.key, key);
+    // Where the plugin reads it from: an obsidian:password field, else the login password or the notes.
+    for (const f of c.fields ?? []) {
+      if ((await decryptString(f.name!, key)) === "obsidian:password") return f.value ? decryptString(f.value, key) : "";
+    }
     return decryptString((c.type === 1 ? (c.login!.password as string) : c.notes)!, key);
   }
 
@@ -311,12 +315,35 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(r.skipped).toHaveLength(2);
     });
 
-    it("uses the newest of duplicate ids", async () => {
-      await server.addItem({ name: "dup", value: "old" });
-      await server.addItem({ name: "Dup", id: "dup", value: "new" });
+    it("uses the oldest of duplicate ids on every device, however they are edited", async () => {
+      const first = await server.addItem({ name: "dup", value: "first" });
+      const clone = await server.addItem({ name: "Dup", id: "dup", value: "clone" });
       const r = await a.controller.sync();
-      expect(a.store.get("dup")).toBe("new");
-      expect(r.skipped.map((s) => s.reason)).toContainEqual(expect.stringMatching(/duplicate/));
+      expect(a.store.get("dup")).toBe("first");
+      expect(r.skipped).toContainEqual({ cipherId: clone.id, reason: expect.stringMatching(/duplicate.*oldest/) });
+      // Editing the clone makes it the newest revision; it still loses.
+      await server.editValue(clone.id, "clone edited");
+      await server.editValue(first.id, "first edited");
+      await server.editValue(clone.id, "clone edited again");
+      await a.controller.sync();
+      expect(a.store.get("dup")).toBe("first edited");
+      expect((await b.controller.sync()).pulled).toEqual(["dup"]);
+      expect(b.store.get("dup")).toBe("first edited");
+    });
+
+    it("stores a new upload in an obsidian:password field, leaving the notes free", async () => {
+      a.store.set("fresh", "s3cret");
+      a.controller.queueUpload("fresh", { kind: "global" });
+      await a.controller.sync();
+      const c = server.ciphers[0]!;
+      expect(c.type).toBe(2);
+      expect(c.notes).toBeNull();
+      expect(await remoteValue(c.id)).toBe("s3cret");
+      // An edit goes back to that same field.
+      a.store.set("fresh", "rotated");
+      await a.controller.sync();
+      expect(server.ciphers[0]!.notes).toBeNull();
+      expect(await remoteValue(c.id)).toBe("rotated");
     });
 
     it("queues a call made during a running sync instead of dropping it", async () => {

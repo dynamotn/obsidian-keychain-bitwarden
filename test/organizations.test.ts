@@ -19,6 +19,10 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
     const c = server.ciphers.find((x) => x.id === cipherId)!;
     let key = await server.ownerKey(c);
     if (c.key) key = await unwrapKey(c.key, key);
+    // Where the plugin reads it from: an obsidian:password field, else the login password or the notes.
+    for (const f of c.fields ?? []) {
+      if ((await decryptString(f.name!, key)) === "obsidian:password") return f.value ? decryptString(f.value, key) : "";
+    }
     return decryptString((c.type === 1 ? (c.login!.password as string) : c.notes)!, key);
   }
 

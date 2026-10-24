@@ -97,7 +97,12 @@ the secret is then cleared on your devices.
 
 Secrets uploaded from Obsidian become secure notes in the **Folder for
 uploads** (`obsidian` by default, created when needed; leave it empty for no
-folder).
+folder). The value goes into a hidden `obsidian:password` field, so the
+note's text stays yours.
+
+If two items carry the same id (for example after "Clone item"), a personal
+item wins over an organization item, then the item created first. Every
+device picks the same one, however the items are edited later.
 
 ### Organization items
 
