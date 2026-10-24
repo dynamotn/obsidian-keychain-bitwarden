@@ -249,19 +249,109 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(b.store.get("db")).toBe("rotated");
     });
 
-    it("skips items using encoding or location, which secret storage cannot honour", async () => {
+    it("skips items storing base64, which secret storage cannot hold", async () => {
       const binary = await server.addItem({ name: "cert", value: "AAEC", extraFields: [["obsidian:encoding", "base64"]] });
-      const moved = await server.addItem({ name: "big", value: "v", extraFields: [["obsidian:location", "notes"]] });
       // A base64 value claimed on the user's own login password (dybw ADR 0005) is never decoded.
       const login = await server.addItem({ name: "pw", value: "hunter2", type: 1, extraFields: [["obsidian:encoding", "base64"]] });
+      const odd = await server.addItem({ name: "odd", value: "v", extraFields: [["obsidian:location", "attic"]] });
       await server.addItem({ name: "plain", value: "p" });
       const r = await a.controller.sync();
       expect(r.pulled).toEqual(["plain"]);
-      for (const [c, field] of [[binary, "encoding"], [moved, "location"], [login, "encoding"]] as const) {
-        expect(r.skipped).toContainEqual({ cipherId: c.id, reason: `"obsidian:${field}" is not supported by this plugin` });
+      for (const c of [binary, login]) {
+        expect(r.skipped).toContainEqual({ cipherId: c.id, reason: '"obsidian:encoding" is not supported by this plugin' });
       }
+      expect(r.skipped).toContainEqual({ cipherId: odd.id, reason: 'unknown "obsidian:location" value' });
       expect(a.store.get("cert")).toBeNull();
       expect(a.store.get("pw")).toBeNull();
+    });
+
+    describe("values too long for a field", () => {
+      const long = "x".repeat(4_000); // over 5,000 encrypted characters
+      const huge = "y".repeat(8_000); // over 10,000
+      const fieldsOf = async (cipherId: string) => {
+        const c = server.ciphers.find((x) => x.id === cipherId)!;
+        const key = c.key ? await unwrapKey(c.key, server.account.userKey) : server.account.userKey;
+        return Promise.all(
+          (c.fields ?? []).map(async (f) => [await decryptString(f.name!, key), f.value ? await decryptString(f.value, key) : null]),
+        );
+      };
+
+      it("upload into the notes of the new item, marked obsidian:location=notes, and sync back", async () => {
+        a.store.set("pem", long);
+        a.controller.queueUpload("pem", { kind: "global" });
+        expect((await a.controller.sync()).created).toEqual(["pem"]);
+        const c = server.ciphers[0]!;
+        expect(await decryptString(c.notes!, server.account.userKey)).toBe(long);
+        const fields = await fieldsOf(c.id);
+        expect(fields).toContainEqual(["obsidian:location", "notes"]);
+        expect(fields.map(([n]) => n)).not.toContain("obsidian:password");
+        expect((await b.controller.sync()).pulled).toEqual(["pem"]);
+        expect(b.store.get("pem")).toBe(long);
+
+        // Shorter again: it stays where it is.
+        b.store.set("pem", "short");
+        await b.controller.sync();
+        expect(await decryptString(server.ciphers[0]!.notes!, server.account.userKey)).toBe("short");
+        expect((await a.controller.sync()).pulled).toEqual(["pem"]);
+      });
+
+      it("move out of an obsidian:password field into empty notes, dropping every copy of the field", async () => {
+        const c = await server.addItem({
+          name: "db",
+          type: 1,
+          value: "token",
+          defaultValue: "site-password",
+          extraFields: [["obsidian:password", "stale duplicate"]],
+        });
+        c.notes = null; // a login whose notes are empty
+        await server.addItem({ name: "pad", value: "p" });
+        await a.controller.sync();
+        a.store.set("db", long);
+        expect((await a.controller.sync()).pushed).toEqual(["db"]);
+        const after = server.ciphers.find((x) => x.id === c.id)!;
+        const key = server.account.userKey;
+        expect(await decryptString(after.notes!, key)).toBe(long);
+        expect(after.login!.password).toBe(c.login!.password);
+        const fields = await fieldsOf(c.id);
+        expect(fields.filter(([n]) => n === "obsidian:password")).toEqual([]);
+        expect(fields).toContainEqual(["obsidian:location", "notes"]);
+        expect(fields).toContainEqual(["unrelated", "keep me"]);
+        expect((await b.controller.sync()).pulled.sort()).toEqual(["db", "pad"]);
+        expect(b.store.get("db")).toBe(long);
+      });
+
+      it("fail without touching anything when the notes hold the user's text, or nothing fits", async () => {
+        // A secure note with the user's own text and the secret in obsidian:password.
+        const note = await server.addItem({ name: "note", value: "token", defaultValue: "my own notes" });
+        const login = await server.addItem({ name: "site", type: 1, value: "pw" });
+        const big = await server.addItem({ name: "big", value: "v", extraFields: [["obsidian:location", "notes"]] });
+        await a.controller.sync();
+        const before = structuredClone(server.ciphers);
+        a.store.set("note", long);
+        a.store.set("site", long);
+        a.store.set("big", huge);
+        const r = await a.controller.sync();
+        expect(r.pushed).toEqual([]);
+        expect(r.errors).toEqual([
+          expect.stringMatching(/^big: the value is too long for the notes: [\d,]+ encrypted characters, at most 10,000 fit$/),
+          expect.stringMatching(/^note: the value is too long for a field .*the notes hold your own text$/),
+          expect.stringMatching(/^site: the value is too long for a login password/),
+        ]);
+        expect(r.errors.join()).not.toContain("xxxx");
+        expect(server.ciphers).toEqual(before);
+        expect(a.store.get("note")).toBe(long);
+        for (const c of [note, login, big]) expect(server.ciphers.find((x) => x.id === c.id)!.revisionDate).toBe(c.revisionDate);
+      });
+
+      it("refuse an upload too long even for the notes, and keep it queued", async () => {
+        a.store.set("huge", huge);
+        a.controller.queueUpload("huge", { kind: "global" });
+        const r = await a.controller.sync();
+        expect(r.created).toEqual([]);
+        expect(r.errors).toEqual([expect.stringMatching(/^huge: the value is too long for the notes/)]);
+        expect(server.ciphers).toHaveLength(0);
+        expect(a.state().pendingCreates).toEqual(["huge"]);
+      });
     });
 
     it("files uploads in the configured folder, or in none", async () => {

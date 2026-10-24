@@ -326,6 +326,22 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       expect(a.store.get("plugin-note")).toBe("edited in bw");
     });
 
+    it("puts a value too long for a field into the notes, readable by the official client", async () => {
+      const long = "-----BEGIN KEY-----\n" + "k".repeat(4_000) + "\n-----END KEY-----";
+      const a = await device();
+      a.store.set("long-key", long);
+      a.controller.queueUpload("long-key", { kind: "global" });
+      expect((await a.controller.sync()).errors).toEqual([]);
+      await bw(["sync"]);
+      const item = (JSON.parse(await bw(["list", "items", "--search", "long-key"])) as Record<string, any>[])[0]!;
+      expect(item.notes).toBe(long);
+      expect(item.fields).toContainEqual(expect.objectContaining({ name: "obsidian:location", value: "notes" }));
+      expect(item.fields.map((f: { name: string }) => f.name)).not.toContain("obsidian:password");
+      const b = await device();
+      await b.controller.sync();
+      expect(b.store.get("long-key")).toBe(long);
+    });
+
     it("decrypts items that use per-item keys", async () => {
       // Recent official clients encrypt new items with their own key when the server allows it.
       const raw = JSON.parse(await bw(["get", "item", JSON.parse(await bw(["list", "items", "--search", "github-token"]))[0].id]));

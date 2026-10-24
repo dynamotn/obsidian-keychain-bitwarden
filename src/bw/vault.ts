@@ -19,12 +19,31 @@ export const FIELD_ID = "obsidian:id";
 export const FIELD_SCOPE = "obsidian:scope";
 /** Holds the secret instead of the login password or the note's text, when present. */
 export const FIELD_PASSWORD = "obsidian:password";
+/** `notes` when the plugin moved a value too long for a field into the notes. */
+export const FIELD_LOCATION = "obsidian:location";
 /**
- * Fields of the dybw data model this plugin does not implement: secret
- * storage holds text only (no `encoding`), and values never move into the
- * notes (no `location`). Items setting them are skipped, never misread.
+ * Not implemented: secret storage holds text only, so an item storing base64
+ * of binary data is skipped, never misread.
  */
-const UNSUPPORTED_FIELDS = ["obsidian:encoding", "obsidian:location"];
+const FIELD_ENCODING = "obsidian:encoding";
+
+/** Bitwarden's limits, in encrypted characters, for a field value or login password, and for the notes. */
+export const FIELD_LIMIT = 5_000;
+export const NOTES_LIMIT = 10_000;
+
+/** A value too long for the place it has to go; the message never contains the value. */
+export class ValueTooLongError extends Error {
+  override name = "ValueTooLongError";
+}
+
+/** Where a marked item's value lives, in the order of the dybw data model. */
+export type ValueSource =
+  /** `obsidian:password`; every index lists the field and its duplicates, the first holds the value. */
+  | { kind: "field"; indexes: number[] }
+  /** The notes, which hold this plugin's value (`obsidian:location=notes`). */
+  | { kind: "notes" }
+  /** The user's own login password, or the secure note's own text. */
+  | { kind: "default" };
 
 /** Same rule as SecretStorage.setSecret: lowercase alphanumerics with optional dashes. */
 export const SECRET_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -38,8 +57,9 @@ export interface SecretRecord {
   label: string;
   value: string;
   scope: Scope;
-  /** Index in `cipher.fields` of the `obsidian:password` field holding the value; null for the default place. */
-  valueField: number | null;
+  source: ValueSource;
+  /** Index of the `obsidian:location` field, if any. */
+  locationField: number | null;
   /** Set for organization items; such items are encrypted with the organization's key. */
   organizationId: string | null;
   /** The organization does not let this user change the item. */
@@ -190,7 +210,7 @@ export async function readVault(
     }
     let key = ownerKey;
     try {
-      let fields: Map<string, { index: number; value: string | null | undefined }>;
+      let fields: Map<string, ToolField>;
       try {
         key = await itemKeyFor(cipher, ownerKey);
         fields = await obsidianFields(cipher, key);
@@ -220,17 +240,28 @@ export async function readVault(
         skipped.push({ cipherId: cipher.id, reason: `unknown "${FIELD_SCOPE}" value` });
         continue;
       }
-      const unsupported = UNSUPPORTED_FIELDS.find((name) => fields.has(name));
-      if (unsupported) {
-        skipped.push({ cipherId: cipher.id, reason: `"${unsupported}" is not supported by this plugin` });
+      if (fields.has(FIELD_ENCODING)) {
+        skipped.push({ cipherId: cipher.id, reason: `"${FIELD_ENCODING}" is not supported by this plugin` });
         continue;
       }
-      const valueField = fields.get(FIELD_PASSWORD) ?? null;
-      const rawValue = valueField
-        ? valueField.value
-        : cipher.type === CipherType.Login
-          ? (cipher.login?.password as string | null | undefined)
-          : cipher.notes;
+      const locationField = fields.get(FIELD_LOCATION) ?? null;
+      const location = locationField ? ((await decryptField(locationField.value, key)) ?? "").trim() : "";
+      if (location !== "" && location !== "notes") {
+        skipped.push({ cipherId: cipher.id, reason: `unknown "${FIELD_LOCATION}" value` });
+        continue;
+      }
+      const passwordField = fields.get(FIELD_PASSWORD);
+      const source: ValueSource = passwordField
+        ? { kind: "field", indexes: passwordField.indexes }
+        : location === "notes"
+          ? { kind: "notes" }
+          : { kind: "default" };
+      const rawValue =
+        source.kind === "field"
+          ? passwordField!.value
+          : source.kind === "notes" || cipher.type === CipherType.SecureNote
+            ? cipher.notes
+            : (cipher.login?.password as string | null | undefined);
       const value = (await decryptField(rawValue, key)) ?? "";
       records.push({
         id,
@@ -239,7 +270,8 @@ export async function readVault(
         label: (await decryptField(cipher.name, key)) ?? "",
         value,
         scope,
-        valueField: valueField?.index ?? null,
+        source,
+        locationField: locationField?.index ?? null,
         organizationId: cipher.organizationId ?? null,
         readOnly: Boolean(cipher.organizationId) && cipher.edit === false,
         cipher,
@@ -253,25 +285,48 @@ export async function readVault(
   return { records, skipped, present };
 }
 
-/** The `obsidian:*` custom fields of an item by name, values still encrypted; the first of duplicates wins. */
-async function obsidianFields(
-  cipher: CipherDto,
-  key: SymmetricKey,
-): Promise<Map<string, { index: number; value: string | null | undefined }>> {
-  const found = new Map<string, { index: number; value: string | null | undefined }>();
+interface ToolField {
+  /** The first field of that name, which counts. */
+  index: number;
+  /** Still encrypted. */
+  value: string | null | undefined;
+  /** Every field of that name, the first included. */
+  indexes: number[];
+}
+
+/** The `obsidian:*` custom fields of an item by name; the first of duplicates counts. */
+async function obsidianFields(cipher: CipherDto, key: SymmetricKey): Promise<Map<string, ToolField>> {
+  const found = new Map<string, ToolField>();
   const list = cipher.fields ?? [];
   for (let index = 0; index < list.length; index++) {
     const f = list[index]!;
     const name = await decryptField(f.name, key);
-    if (name?.startsWith("obsidian:") && !found.has(name)) found.set(name, { index, value: f.value });
+    if (!name?.startsWith("obsidian:")) continue;
+    const seen = found.get(name);
+    if (seen) seen.indexes.push(index);
+    else found.set(name, { index, value: f.value, indexes: [index] });
   }
   return found;
 }
 
+function checkLength(enc: string | null, limit: number, place: string) {
+  const length = enc?.length ?? 0;
+  if (length > limit) {
+    throw new ValueTooLongError(
+      `the value is too long for ${place}: ${length.toLocaleString("en")} encrypted characters, ` +
+        `at most ${limit.toLocaleString("en")} fit`,
+    );
+  }
+}
+
+async function locationField(key: SymmetricKey): Promise<FieldDto> {
+  return { type: 0, name: await encryptString(FIELD_LOCATION, key), value: await encryptString("notes", key) };
+}
+
 /**
  * Builds a request for a new secure note holding one secret. The value goes
- * into an `obsidian:password` field, never the notes: notes and passwords are
- * the user's, and a new item must leave them free.
+ * into an `obsidian:password` field, never the user's notes. A value too long
+ * for a field goes into the (still empty) notes with `obsidian:location=notes`.
  */
 export async function newSecretRequest(
   userKey: SymmetricKey,
@@ -280,13 +335,12 @@ export async function newSecretRequest(
   value: string,
   scope: Scope,
 ): Promise<CipherRequest> {
+  const enc = value === "" ? null : await encryptString(value, userKey);
+  const inNotes = (enc?.length ?? 0) > FIELD_LIMIT;
+  if (inNotes) checkLength(enc, NOTES_LIMIT, "the notes");
   const fields: FieldDto[] = [
     { type: 0, name: await encryptString(FIELD_ID, userKey), value: await encryptString(id, userKey) },
-    {
-      type: 1,
-      name: await encryptString(FIELD_PASSWORD, userKey),
-      value: value === "" ? null : await encryptString(value, userKey),
-    },
+    inNotes ? await locationField(userKey) : { type: 1, name: await encryptString(FIELD_PASSWORD, userKey), value: enc },
   ];
   if (scope.kind !== "global") {
     fields.push({
@@ -300,7 +354,7 @@ export async function newSecretRequest(
     folderId,
     organizationId: null,
     name: await encryptString(id, userKey),
-    notes: null,
+    notes: inNotes ? enc : null,
     fields,
     favorite: false,
     reprompt: 0,
@@ -359,10 +413,32 @@ export async function updateValueRequest(
       passwordHistory: c.passwordHistory ?? null,
       lastKnownRevisionDate: c.revisionDate,
     };
-    if (record.valueField !== null) {
-      // The value lives in the obsidian:password field; the rest of the item is untouched.
-      req.fields = req.fields.map((f, i) => (i === record.valueField ? { ...f, value: encValue } : f));
+    const source = record.source;
+    if (source.kind === "field") {
+      if ((encValue?.length ?? 0) <= FIELD_LIMIT) {
+        // The value lives in the obsidian:password field; the rest of the item is untouched.
+        req.fields = req.fields.map((f, i) => (i === source.indexes[0] ? { ...f, value: encValue } : f));
+      } else {
+        // Too long for a field: the notes may take it only if they hold nothing of the user's.
+        if (c.notes && record.locationField === null) {
+          throw new ValueTooLongError(
+            `the value is too long for a field (${encValue!.length.toLocaleString("en")} encrypted characters, ` +
+              `at most ${FIELD_LIMIT.toLocaleString("en")}), and the notes hold your own text`,
+          );
+        }
+        checkLength(encValue, NOTES_LIMIT, "the notes");
+        req.notes = encValue;
+        // Every obsidian:password goes, or a duplicate would become the value source.
+        const kept = req.fields.filter((_, i) => !source.indexes.includes(i));
+        if (record.locationField === null) kept.push(await locationField(key));
+        else kept[kept.indexOf(req.fields[record.locationField]!)] = await locationField(key);
+        req.fields = kept;
+      }
+    } else if (source.kind === "notes") {
+      checkLength(encValue, NOTES_LIMIT, "the notes");
+      req.notes = encValue;
     } else if (c.type === CipherType.Login) {
+      checkLength(encValue, FIELD_LIMIT, "a login password");
       const previous = c.login?.password as string | null | undefined;
       if (previous) {
         // Like the official clients: keep the replaced password, newest first, at most 5.
@@ -373,6 +449,7 @@ export async function updateValueRequest(
       }
       req.login = { ...(c.login ?? {}), password: encValue, passwordRevisionDate: now.toISOString() };
     } else {
+      checkLength(encValue, NOTES_LIMIT, "the notes");
       req.notes = encValue;
       req.secureNote = c.secureNote ?? { type: 0 };
     }

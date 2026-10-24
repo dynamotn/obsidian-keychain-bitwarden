@@ -12,7 +12,7 @@ way it is, and how it was verified. The user-facing summary is in
 - Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
   (XChaCha20-Poly1305). Everything else is WebCrypto, Web Workers, WebSocket
   and the Obsidian API.
-- Bundle: one 124.4 KiB `main.js` (production build), with the Argon2
+- Bundle: one 125.6 KiB `main.js` (production build), with the Argon2
   worker embedded in it. Its only import is `obsidian`.
 
 ## Contents
@@ -142,6 +142,7 @@ Folder names are decrypted only to find the folder for uploads.
 |---|---|
 | Custom field `obsidian:id` | **required**: marks the item and gives the secret id |
 | Custom field `obsidian:password` | value, when present (any field type; hidden is usual) |
+| Custom field `obsidian:location` = `notes` | otherwise value = `notes`, which the plugin filled because the value did not fit a field |
 | Item type **Login** (1) | otherwise value = `login.password` |
 | Item type **Secure note** (2) | otherwise value = `notes` |
 | Custom field `obsidian:scope` | `global` (default), `vault:<vault name>`, `device:<device id>` |
@@ -177,12 +178,27 @@ Rules:
   the id to it, and later local edits would then go to its members. "Keep mine" creates a personal item
   (which then wins); a push only ever goes to the organization item that
   the base entry already names, and the engine refuses anything else.
-- **Unsupported fields**: secret storage holds text only, and the plugin
-  never moves a value into the notes, so it does not implement the data
-  model's `obsidian:encoding` and `obsidian:location`. An item that sets
-  either is skipped and reported, never misread; a secret already synced
-  from it is held. This also covers base64 claimed on a login's own
-  password, which the data model forbids (dybw ADR 0005).
+- **Encoding**: secret storage holds text only, so the plugin does not
+  implement the data model's `obsidian:encoding`. An item that sets it is
+  skipped and reported, never misread; a secret already synced from it is
+  held. This also covers base64 claimed on a login's own password, which
+  the data model forbids (dybw ADR 0005). An unknown `obsidian:location`
+  value is skipped the same way.
+- **Sizes** (data model §6.4): Bitwarden takes at most 5,000 encrypted
+  characters in a field value or login password and 10,000 in the notes.
+  The plugin checks the encrypted length before every write, so an
+  oversize value fails on the device with a message that never contains it,
+  and the item is not touched:
+  - a value in `obsidian:password` that no longer fits moves into the notes
+    with `obsidian:location=notes`, when the notes are empty or already
+    marked that way; every `obsidian:password` field is then removed, so a
+    duplicate cannot become the value source. Otherwise the write fails:
+    the notes hold the user's own text;
+  - a new upload that does not fit a field is created with the value in its
+    (empty) notes and `obsidian:location=notes`;
+  - a value already in the notes stays there, even when it shrinks;
+  - a login password over 5,000, or notes over 10,000, fail.
+  A failed upload stays queued and is retried on the next sync.
 - **Excluded items**: unmarked items, trashed items (`deletedDate`), other
   item types (cards, identities, SSH keys; reported when marked), and
   organization items unless enabled (not decrypted, so not reported).
@@ -572,8 +588,8 @@ Static analysis:
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **338 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **680 passed** (340 × 2) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **350 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **704 passed** (352 × 2) |
 | Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
 | Real server + independent clients | `npm run test:integration` | **12 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |

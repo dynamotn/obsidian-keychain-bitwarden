@@ -86,11 +86,16 @@ in any folder or none, becomes a secret once it has a custom field named
 | In Bitwarden | In Obsidian |
 |---|---|
 | Custom field `obsidian:id` (required) | Secret id, e.g. `openai-api-key` (lowercase letters, digits and dashes) |
-| Custom field `obsidian:password` if the item has one, else the login password or the secure note's text | Secret value |
+| Custom field `obsidian:password` if the item has one, else the notes when `obsidian:location` is `notes`, else the login password or the secure note's text | Secret value |
 | Optional custom field `obsidian:scope` | Where the secret appears: `global` (default, everywhere), `vault:<name>` (one vault), `device:<id>` (one device; the id is shown in the settings) |
 
-Items using `obsidian:encoding` or `obsidian:location` are skipped and
-reported: secret storage holds text only.
+Bitwarden fits about 3,600 characters in a custom field. A longer secret
+(a private key, a certificate) goes into the item's notes instead, marked
+`obsidian:location` = `notes`, but only when the notes are empty or already
+hold that secret: your own notes are never overwritten, and the edit is
+reported as an error instead. A login password has the same limit; notes
+take about twice as much. Items using `obsidian:encoding` (binary data)
+are skipped and reported: secret storage holds text only.
 
 `obsidian:password` lets a secret live next to an unrelated password, for
 example an API token on the login of the site that issued it. Edits made in
