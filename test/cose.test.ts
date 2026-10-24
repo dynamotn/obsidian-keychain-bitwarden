@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import sdk from "./fixtures/cose-vectors.json";
-import { xaes256gcmDecrypt, xaes256gcmEncrypt } from "../src/bw/aead";
+import {
+  xaes256gcmDecrypt,
+  xaes256gcmEncrypt,
+  xchacha20poly1305Decrypt,
+  xchacha20poly1305Encrypt,
+} from "../src/bw/aead";
 import { CborError, decodeCbor, encodeCbor } from "../src/bw/cbor";
 import { encodeCoseKey, pad, parseCoseKey, unpad } from "../src/bw/cose";
 import {
@@ -36,6 +41,35 @@ describe("XAES-256-GCM (C2SP test vectors)", () => {
     expect(await xaes256gcmDecrypt(key, nonce, ct, utf8Encode(aad))).toEqual(plaintext);
     ct[0]! ^= 1;
     await expect(xaes256gcmDecrypt(key, nonce, ct, utf8Encode(aad))).rejects.toThrow(CryptoError);
+  });
+});
+
+describe("AEAD inputs", () => {
+  const key = new Uint8Array(32);
+  const nonce = new Uint8Array(24);
+  const data = new Uint8Array(16);
+  const aad = new Uint8Array(0);
+
+  it("refuse keys that are not 32 bytes", async () => {
+    // AES would take a 16-byte key as AES-128.
+    await expect(xaes256gcmEncrypt(new Uint8Array(16), nonce, data, aad)).rejects.toThrow("AEAD keys are 32 bytes");
+    await expect(xaes256gcmDecrypt(new Uint8Array(16), nonce, data, aad)).rejects.toThrow("AEAD keys are 32 bytes");
+    expect(() => xchacha20poly1305Encrypt(new Uint8Array(16), nonce, data, aad)).toThrow("AEAD keys are 32 bytes");
+    expect(() => xchacha20poly1305Decrypt(new Uint8Array(33), nonce, data, aad)).toThrow("AEAD keys are 32 bytes");
+  });
+
+  it("refuse nonces that are not 24 bytes", async () => {
+    await expect(xaes256gcmEncrypt(key, new Uint8Array(12), data, aad)).rejects.toThrow("AEAD nonces are 24 bytes");
+    await expect(xaes256gcmDecrypt(key, new Uint8Array(25), data, aad)).rejects.toThrow("AEAD nonces are 24 bytes");
+    expect(() => xchacha20poly1305Encrypt(key, new Uint8Array(12), data, aad)).toThrow("AEAD nonces are 24 bytes");
+    expect(() => xchacha20poly1305Decrypt(key, new Uint8Array(23), data, aad)).toThrow("AEAD nonces are 24 bytes");
+  });
+
+  it("refuse a tampered XChaCha20-Poly1305 ciphertext", () => {
+    const ct = xchacha20poly1305Encrypt(key, nonce, data, aad);
+    expect(xchacha20poly1305Decrypt(key, nonce, ct, aad)).toEqual(data);
+    ct[0]! ^= 1;
+    expect(() => xchacha20poly1305Decrypt(key, nonce, ct, aad)).toThrow(CryptoError);
   });
 });
 
@@ -125,6 +159,35 @@ for (const account of sdk.accounts) {
       await expect(decryptString("7.!!!", key)).rejects.toThrow(/Malformed/);
       await expect(decryptString(`7.${toBase64(message.subarray(0, 20))}`, key)).rejects.toThrow(/Malformed/);
     });
+
+    it("refuses messages of the wrong shape", async () => {
+      const key = await userKey();
+      const message = fromBase64(account.texts[1]!.enc.slice(2));
+      const [prot, unprot, ct] = decodeCbor(message) as [Uint8Array, Map<number, unknown>, Uint8Array];
+      const enc = (v: unknown) => `7.${toBase64(encodeCbor(v as never))}`;
+      // The last one is a valid message plus an extra element.
+      for (const shape of [[prot, unprot], new Map(), ["text", unprot, ct], [prot, unprot, "text"], [prot, unprot, ct, ct]]) {
+        await expect(decryptString(enc(shape), key)).rejects.toThrow("Malformed COSE message");
+      }
+      // Headers that are not maps.
+      await expect(decryptString(enc([prot, [], ct]), key)).rejects.toThrow("Malformed COSE header");
+      await expect(decryptString(enc([encodeCbor([1]), unprot, ct]), key)).rejects.toThrow("Malformed COSE header");
+      // An empty protected header names no algorithm.
+      await expect(decryptString(enc([new Uint8Array(0), unprot, ct]), key)).rejects.toThrow("Unsupported COSE algorithm");
+    });
+
+    it("refuses a message with a missing or unknown content type", async () => {
+      const key = await userKey();
+      const message = fromBase64(account.texts[1]!.enc.slice(2));
+      const [prot, unprot, ct] = decodeCbor(message) as [Uint8Array, Map<number, unknown>, Uint8Array];
+      const header = decodeCbor(prot) as Map<number, unknown>;
+      for (const contentType of ["text/plain", undefined]) {
+        if (contentType === undefined) header.delete(3);
+        else header.set(3, contentType);
+        const enc = `7.${toBase64(encodeCbor([encodeCbor(header as never), unprot as never, ct]))}`;
+        await expect(decryptString(enc, key)).rejects.toThrow("COSE message has a missing or unsupported content type");
+      }
+    });
   });
 }
 
@@ -150,6 +213,18 @@ describe("COSE keys", () => {
     expect(bad({ 2: new Uint8Array(4) })).toThrow(/key id/);
     expect(bad({ [-1]: new Uint8Array(16) })).toThrow(/key/);
     expect(bad({ 4: [9] })).toThrow(/operations/);
+    expect(bad({ 4: 4 })).toThrow(/operations/);
+    expect(() => parseCoseKey(encodeCbor([1]))).toThrow("Malformed COSE key");
+    expect(() => parseCoseKey(new Uint8Array([0xa1]))).toThrow("Malformed COSE key");
+  });
+
+  it("allow no operation when they list none", async () => {
+    const k = parseCoseKey(unpad(fromBase64(sdk.accounts[0]!.userKey)));
+    const m = new Map<number, unknown>([[1, 4], [2, k.keyId], [3, -70010], [-1, k.key]]);
+    const parsed = parseCoseKey(encodeCbor(m as never));
+    expect(parsed.keyOps).toEqual([]);
+    const key = SymmetricKey.fromCoseKey(encodeCbor(m as never));
+    await expect(encryptString("x", key)).rejects.toThrow(/may not be used to encrypt/);
   });
 
   it("use the SDK's padding", () => {
@@ -159,6 +234,9 @@ describe("COSE keys", () => {
     expect(() => unpad(new Uint8Array([7, 0]))).toThrow(CryptoError);
     expect(() => unpad(new Uint8Array([7, 9]))).toThrow(CryptoError);
     expect(() => unpad(new Uint8Array([]))).toThrow(CryptoError);
+    // The length lives in one byte.
+    expect(pad(new Uint8Array(0), 255)).toEqual(new Uint8Array(255).fill(255));
+    expect(() => pad(new Uint8Array(0), 256)).toThrow("Padding too long");
   });
 
   it("keep their kind when remembered", async () => {
@@ -186,6 +264,33 @@ describe("CBOR decoder", () => {
     expect(() => decodeCbor(hex(bytes))).toThrow(CborError);
   });
 
+  it("keeps a truncated text string a truncation, not a UTF-8 error", () => {
+    expect(() => decodeCbor(hex("6361"))).toThrow("Truncated CBOR data");
+  });
+
+  it("reads integers beyond 2^53 as bigints", () => {
+    expect(decodeCbor(hex("1b001fffffffffffff"))).toBe(Number.MAX_SAFE_INTEGER);
+    expect(decodeCbor(hex("1b0020000000000000"))).toBe(2n ** 53n);
+    expect(decodeCbor(hex("1bffffffffffffffff"))).toBe(2n ** 64n - 1n);
+    expect(decodeCbor(hex("3bffffffffffffffff"))).toBe(-(2n ** 64n));
+    expect(decodeCbor(hex("3b001ffffffffffffe"))).toBe(-Number.MAX_SAFE_INTEGER);
+  });
+
+  it.each([
+    ["byte string", "5b0020000000000000"],
+    ["text string", "7b0020000000000000"],
+    ["array", "9b0020000000000000"],
+    ["map", "bb0020000000000000"],
+  ])("rejects a %s longer than 2^53 bytes", (_name, bytes) => {
+    expect(() => decodeCbor(hex(bytes))).toThrow("CBOR item is too long");
+  });
+
+  it("reads the simple values false, true and null", () => {
+    expect(decodeCbor(hex("f4"))).toBe(false);
+    expect(decodeCbor(hex("f5"))).toBe(true);
+    expect(decodeCbor(hex("f6"))).toBe(null);
+  });
+
   it("rejects deep nesting", () => {
     expect(() => decodeCbor(new Uint8Array(100).fill(0x81))).toThrow(/nested/);
   });
@@ -194,5 +299,14 @@ describe("CBOR decoder", () => {
     const v = [new Uint8Array([1, 2]), new Map<number | string, never>([[1, -70010 as never], [3, "text" as never]]), -1, 2 ** 40, true, null];
     expect(decodeCbor(encodeCbor(v as never))).toEqual(v);
     expect(toHex(encodeCbor(-70010))).toBe("3a00011179");
+    expect(toHex(encodeCbor(false))).toBe("f4");
+    for (const big of [2n ** 64n - 1n, -(2n ** 64n)]) expect(decodeCbor(encodeCbor(big))).toBe(big);
+  });
+
+  it("refuses to encode what it cannot represent", () => {
+    for (const n of [1.5, NaN, Infinity, 2 ** 53]) expect(() => encodeCbor(n)).toThrow("Only integers are supported");
+    // Integers beyond 64 bits would otherwise be truncated.
+    expect(() => encodeCbor(2n ** 64n)).toThrow("CBOR argument out of range");
+    expect(() => encodeCbor(-(2n ** 64n) - 1n)).toThrow("CBOR argument out of range");
   });
 });

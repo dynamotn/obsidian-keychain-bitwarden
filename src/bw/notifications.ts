@@ -225,6 +225,7 @@ export class NotificationHub {
     this.settleTimer = this.timers.set(() => {
       this.settleTimer = null;
       this.lastChange = Date.now();
+      // A callback queued before stop() cleared it must not start a sync.
       if (this.running) this.o.onChange();
     }, wait);
   }
@@ -232,6 +233,7 @@ export class NotificationHub {
   private schedulePing(): void {
     this.pingTimer = this.timers.set(() => {
       this.pingTimer = null;
+      // A ping left over from an earlier socket must not reach one still handshaking.
       if (!this.socket || !this.handshakeDone) return;
       try {
         this.socket.send(PING);

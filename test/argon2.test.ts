@@ -37,6 +37,12 @@ class FakeWorker implements WorkerLike {
   reply(data: WorkerResponse): void {
     this.onmessage?.({ data } as MessageEvent<WorkerResponse>);
   }
+  /** Raises an uncaught error inside the worker; returns whether the runner handled it. */
+  fail(message: string): boolean {
+    let handled = false;
+    this.onerror?.({ message, preventDefault: () => (handled = true) } as unknown as ErrorEvent);
+    return handled;
+  }
 }
 
 const input = (): Argon2Input => ({
@@ -101,6 +107,39 @@ describe("Argon2 in a worker", () => {
     w.reply({ error: "out of memory" });
     await expect(run).rejects.toThrow(/out of memory/);
     expect(w.terminated).toBe(true);
+  });
+
+  it("reports a worker that stops with an uncaught error", async () => {
+    for (const [message, expected] of [
+      ["RuntimeError: unreachable", /Key derivation failed: RuntimeError: unreachable/],
+      ["", /Key derivation failed: the worker stopped/],
+    ] as const) {
+      const w = new FakeWorker();
+      const run = argon2InWorker({ spawn: () => w, timeoutMs: 10_000 })(input());
+      expect(w.fail(message)).toBe(true);
+      await expect(run).rejects.toThrow(expected);
+      expect(w.terminated).toBe(true);
+    }
+  });
+
+  it("reports why a worker cannot be started when there is no fallback", async () => {
+    const blocked = new Error("blocked");
+    await expect(
+      argon2InWorker({
+        spawn: () => {
+          throw blocked;
+        },
+        timeoutMs: 10_000,
+      })(input()),
+    ).rejects.toBe(blocked);
+    await expect(
+      argon2InWorker({
+        spawn: () => {
+          throw "no workers here";
+        },
+        timeoutMs: 10_000,
+      })(input()),
+    ).rejects.toThrow(new Error("no workers here"));
   });
 
   it("falls back when a worker cannot be started", async () => {
@@ -173,6 +212,13 @@ describe("Argon2 on the calling thread", () => {
     const abort = new AbortController();
     abort.abort();
     await expect(argon2InThread(input(), abort.signal)).rejects.toBeInstanceOf(KdfAbortedError);
+  });
+
+  it("discards the key when aborted while it was derived", async () => {
+    const abort = new AbortController();
+    const run = argon2InThread(input(), abort.signal);
+    abort.abort();
+    await expect(run).rejects.toBeInstanceOf(KdfAbortedError);
   });
 });
 

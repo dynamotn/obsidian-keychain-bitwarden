@@ -45,6 +45,24 @@ describe("MessagePack decoder (vectors from the Python msgpack library)", () => 
     expect((n.Payload as Record<string, MsgValue>).RevisionDate).toBeInstanceOf(Date);
   });
 
+  it.each<[string, string, unknown]>([
+    ["bin 32", "c6 00 00 00 02 ab cd", { $bin: "abcd" }],
+    ["map 32", "df 00 00 00 01 a1 61 01", { a: 1 }],
+    ["int 64 within the safe range", "d3 ff ff ff ff ff ff ff fe", -2],
+    ["int 64 beyond the safe range", "d3 80 00 00 00 00 00 00 00", { $big: "-9223372036854775808" }],
+  ])("decodes %s", (_name, bytes, expected) => {
+    expect(tagged(decodeMsgPack(hex(bytes)))).toEqual(expected);
+  });
+
+  it.each([
+    ["fixext 1", "d4", "aa"],
+    ["ext 16", "c8 00 02", "aa bb"],
+    ["ext 32", "c9 00 00 00 02", "aa bb"],
+    ["fixext 16", "d8", "00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff"],
+  ])("keeps the type and bytes of an application %s", (_name, head, data) => {
+    expect(decodeMsgPack(hex(`${head} 05 ${data}`))).toEqual({ ext: 5, data: hex(data) });
+  });
+
   it.each([
     ["truncated string", "a3 61 62"],
     ["truncated array", "92 01"],
@@ -115,8 +133,11 @@ class FakeSocket implements SocketLike {
   onerror: SocketLike["onerror"] = null;
   sent: (string | Uint8Array)[] = [];
   closed = false;
+  /** Makes send() throw, as a socket that went away underneath does. */
+  failSends = false;
   constructor(readonly url: string) {}
   send(data: string | Uint8Array): void {
+    if (this.failSends) throw new Error("socket is closed");
     this.sent.push(data);
   }
   close(): void {
@@ -144,6 +165,11 @@ function invocation(type: number, contextId: string | null): Uint8Array {
   if (body.length > 127) throw new Error("test helper only frames short messages");
   return new Uint8Array([body.length, ...body]);
 }
+
+/** Frames a short MessagePack message the way the server does. */
+const frame = (...body: number[]) => new Uint8Array([body.length, ...body]);
+const enc = (s: string) => [0xa0 | s.length, ...new TextEncoder().encode(s)];
+const RECEIVE_MESSAGE = [0x95, 0x01, 0x80, 0xc0, ...enc("ReceiveMessage")];
 
 describe("notifications hub client", () => {
   let sockets: FakeSocket[];
@@ -355,6 +381,50 @@ describe("notifications hub client", () => {
     expect(sockets).toHaveLength(1);
   });
 
+  describe("with timers that may still fire after being cleared", () => {
+    // A callback already queued when it is cleared, as can happen around unload.
+    let urlRequests: number;
+    const late = { set: timers.set, clear: () => {} };
+
+    beforeEach(() => {
+      urlRequests = 0;
+      url = async () => {
+        urlRequests++;
+        return "wss://bw.test/notifications/hub?access_token=tok";
+      };
+      hub = make({ timers: late, backoffMs: [2_000] });
+    });
+
+    it("reports no change once stopped", async () => {
+      hub.start();
+      const s = await connected();
+      s.receive(invocation(0, "other-device"));
+      hub.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(changes).toBe(0);
+    });
+
+    it("does not reconnect once stopped", async () => {
+      hub.start();
+      (await connected()).drop();
+      hub.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(urlRequests).toBe(1);
+      expect(sockets).toHaveLength(1);
+    });
+
+    it("never pings a new socket before its handshake", async () => {
+      hub.start();
+      (await connected()).drop();
+      await vi.advanceTimersByTimeAsync(2_000);
+      const next = sockets[1]!;
+      next.open();
+      // The first socket's ping comes due while the new one still waits for its handshake.
+      await vi.advanceTimersByTimeAsync(13_000);
+      expect(next.sent).toEqual(['{"protocol":"messagepack","version":1}\u001e']);
+    });
+  });
+
   it("wakes up at once instead of waiting for the next attempt", async () => {
     hub.start();
     const s = await connected();
@@ -374,5 +444,200 @@ describe("notifications hub client", () => {
     staleOnMessage?.({ data: invocation(0, "other-device").slice().buffer } as MessageEvent);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(changes).toBe(0);
+  });
+
+  it("ignores a stale socket's open, error and close events after reconnecting", async () => {
+    hub.start();
+    const old = await connected();
+    const { onopen, onerror, onclose } = old;
+    old.drop();
+    await vi.advanceTimersByTimeAsync(2_000);
+    const s = await connected();
+    onopen?.(new Event("open"));
+    onerror?.(new Event("error"));
+    onclose?.({} as CloseEvent);
+    expect(old.sent).toHaveLength(1);
+    expect(s.closed).toBe(false);
+    expect(hub.connected).toBe(true);
+  });
+
+  it("keeps its connection when started again", async () => {
+    hub.start();
+    const s = await connected();
+    hub.start();
+    await flush();
+    expect(sockets).toHaveLength(1);
+    expect(s.closed).toBe(false);
+    expect(hub.connected).toBe(true);
+  });
+
+  it("does not wake a connection that is up, or a hub that was stopped", async () => {
+    let calls = 0;
+    url = async () => {
+      calls++;
+      return "wss://bw.test/notifications/hub?access_token=tok";
+    };
+    hub.start();
+    await connected();
+    hub.wake();
+    await flush();
+    expect(sockets).toHaveLength(1);
+    hub.stop();
+    hub.wake();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  it("opens one socket when woken while the first URL is still on its way", async () => {
+    hub.start();
+    hub.wake();
+    await flush();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("does not retry for a URL request that an earlier wake superseded", async () => {
+    let calls = 0;
+    let rejectFirst: (e: Error) => void = () => {};
+    url = () => {
+      calls++;
+      if (calls > 1) return Promise.resolve("wss://bw.test/notifications/hub?access_token=tok");
+      return new Promise((_, reject) => {
+        rejectFirst = reject;
+      });
+    };
+    hub.start();
+    hub.wake();
+    await flush();
+    expect(sockets).toHaveLength(1);
+    rejectFirst(new Error("offline"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets).toHaveLength(1);
+    expect(calls).toBe(2);
+  });
+
+  it("opens no socket when stopped while the URL is on its way", async () => {
+    hub.start();
+    hub.stop();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets).toHaveLength(0);
+  });
+
+  it("retries later when the socket cannot be created", async () => {
+    let attempts = 0;
+    hub = make({
+      createSocket: (u) => {
+        if (++attempts === 1) throw new Error("blocked");
+        const s = new FakeSocket(u);
+        sockets.push(s);
+        return s;
+      },
+    });
+    hub.start();
+    await flush();
+    expect(sockets).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("starts over after a socket error", async () => {
+    hub.start();
+    const s = await connected();
+    s.onerror?.(new Event("error"));
+    expect(s.closed).toBe(true);
+    expect(hub.connected).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("starts over when a ping cannot be sent", async () => {
+    hub.start();
+    const s = await connected();
+    s.failSends = true;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(s.closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("accepts the handshake as a text frame, and ignores text after it", async () => {
+    hub.start();
+    await flush();
+    const s = sockets[0]!;
+    s.open();
+    s.receive("{}\u001e");
+    expect(hub.connected).toBe(true);
+    s.receive('{"type":1,"target":"ReceiveMessage"}\u001e');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(s.closed).toBe(false);
+    expect(changes).toBe(0);
+  });
+
+  it("starts over after a message of a type the socket should never deliver", async () => {
+    hub.start();
+    const s = await connected();
+    s.onmessage?.({ data: new Blob(["x"]) } as MessageEvent);
+    expect(s.closed).toBe(true);
+  });
+
+  it.each([
+    ["a nil message", frame(0xc0)],
+    ["a ping", frame(0x91, 0x06)],
+    ["another method", frame(0x95, 0x01, 0x80, 0xc0, ...enc("Other"), 0x91, 0x81, ...enc("Type"), 0x00)],
+    ["no arguments", frame(...RECEIVE_MESSAGE, 0xc0)],
+    ["a nil notification", frame(...RECEIVE_MESSAGE, 0x91, 0xc0)],
+    ["a number for a notification", frame(...RECEIVE_MESSAGE, 0x91, 0x00)],
+    ["bytes for a notification", frame(...RECEIVE_MESSAGE, 0x91, 0xc4, 0x01, 0x00)],
+  ])("stays connected and reports nothing for %s", async (_name, data) => {
+    hub.start();
+    const s = await connected();
+    s.receive(data);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(s.closed).toBe(false);
+    expect(hub.connected).toBe(true);
+    expect(changes).toBe(0);
+  });
+
+  it("reconnects once when one message closes the connection twice", async () => {
+    hub.start();
+    const s = await connected();
+    s.receive(hex("02 91 07 02 91 07"));
+    expect(s.closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets).toHaveLength(2);
+  });
+});
+
+describe("notifications hub client with the default timers", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // The plugin uses window timers, as Obsidian asks of plugins; Node has none.
+    if (typeof window === "undefined") vi.stubGlobal("window", globalThis);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("schedules retries on window timers and clears them on stop", async () => {
+    let calls = 0;
+    const hub = new NotificationHub({
+      url: () => {
+        calls++;
+        return Promise.reject(new Error("offline"));
+      },
+      createSocket: () => {
+        throw new Error("not reached");
+      },
+      deviceId: () => "this-device",
+      onChange: () => {},
+    });
+    hub.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(calls).toBe(2);
+    hub.stop();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(calls).toBe(2);
   });
 });

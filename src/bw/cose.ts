@@ -6,7 +6,7 @@
 // test/fixtures/cose-vectors.json.
 
 import { xaes256gcmDecrypt, xaes256gcmEncrypt, xchacha20poly1305Decrypt, xchacha20poly1305Encrypt, NONCE_SIZE } from "./aead";
-import { CborError, decodeCbor, encodeCbor, type CborMap, type CborValue } from "./cbor";
+import { decodeCbor, encodeCbor, type CborMap, type CborValue } from "./cbor";
 import { CryptoError } from "./crypto-error";
 
 export type CoseAlgorithm = "xaes256gcm" | "xchacha20poly1305";
@@ -78,9 +78,9 @@ function asMap(value: CborValue, what: string): CborMap {
 function decode(bytes: Uint8Array, what: string): CborValue {
   try {
     return decodeCbor(bytes);
-  } catch (e) {
-    if (e instanceof CborError) throw new CryptoError(`Malformed COSE ${what}`);
-    throw e;
+  } catch {
+    // decodeCbor only throws CborError: every read is bounds-checked.
+    throw new CryptoError(`Malformed COSE ${what}`);
   }
 }
 

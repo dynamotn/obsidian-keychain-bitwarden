@@ -150,10 +150,9 @@ export function planSync(input: PlanInput): Action[] {
       continue;
     }
 
-    // Neither remote nor base: only an explicit upload request creates an item.
-    if (pendingCreates.has(id)) {
-      actions.push(l.fingerprint === null ? { kind: "forget", id } : { kind: "create", id });
-    }
+    // Neither remote nor base, so the id is here only because the user asked
+    // to upload it (see `ids`): nothing else ever creates an item.
+    actions.push(l.fingerprint === null ? { kind: "forget", id } : { kind: "create", id });
   }
   return actions;
 }

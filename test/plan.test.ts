@@ -102,6 +102,20 @@ describe("planSync", () => {
     expect(plan({ base: [["a", B("a", "1", "x")]] })).toEqual([{ kind: "forget", id: "a" }]);
   });
 
+  it("clears an edited secret deleted remotely only when the policy prefers Bitwarden", () => {
+    expect(plan({ base: [["a", B("a", "1", "x")]], local: { a: "edited" }, policy: "prefer-remote" })).toEqual([
+      { kind: "clear-local", id: "a" },
+    ]);
+  });
+
+  it("treats a queued upload meeting a new remote item of the same id as a both-changed conflict", () => {
+    const input = { remote: [R("a", "1", "remote")], local: { a: "queued" }, pending: ["a"] };
+    expect(plan(input)).toEqual([{ kind: "conflict", id: "a", conflict: "both-changed" }]);
+    // Unlike a never-synced value, the user asked for this one to be uploaded: the policy may settle it.
+    expect(plan({ ...input, policy: "prefer-local" })).toEqual([{ kind: "push", id: "a" }]);
+    expect(plan({ ...input, policy: "prefer-remote" })).toEqual([{ kind: "pull", id: "a" }]);
+  });
+
   it("creates only what the user queued", () => {
     expect(plan({ local: { a: "v", b: "w" }, pending: ["a"] })).toEqual([{ kind: "create", id: "a" }]);
     expect(plan({ pending: ["gone"] })).toEqual([{ kind: "forget", id: "gone" }]);

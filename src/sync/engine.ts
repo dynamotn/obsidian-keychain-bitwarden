@@ -367,6 +367,7 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
         return false;
       }
       const ownerKey = ownerKeyFor(rec.cipher, userKey, pass.orgKeys);
+      // readVault read the item with this key, so it is here; refuse plainly if that ever changes.
       if (!ownerKey) throw new Error("the key of its organization is not available");
       try {
         const res = await api.updateItem(rec.cipherId, await updateValueRequest(rec, ownerKey, local));

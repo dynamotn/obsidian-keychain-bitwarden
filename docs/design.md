@@ -611,10 +611,11 @@ Static analysis:
 
 | Suite | Command | Result |
 |---|---|---|
-| Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
+| Typecheck, plugin and tests | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **350 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **704 passed** (352 × 2) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **611 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Coverage of the code that runs without Obsidian (all but `main.ts`, `ui.ts` and the worker) | `npm run test:coverage` | **100%** statements, branches, functions and lines; below that it fails |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **1226 passed** (613 × 2) |
 | Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
 | Real server + independent clients | `npm run test:integration` | **12 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
@@ -815,6 +816,7 @@ npm run lint               # eslint-plugin-obsidianmd
 npm run build              # typecheck (TypeScript 7) + production main.js with the embedded worker
 npm run check:bundle
 npm test                   # unit + multi-device
+npm run test:coverage      # the same, with the 100% coverage gate
 npm run test:browser       # needs: npx playwright install chromium webkit
 npm run perf && npm run perf:browser
 

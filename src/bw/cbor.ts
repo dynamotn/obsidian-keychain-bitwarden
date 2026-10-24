@@ -112,7 +112,8 @@ export function encodeCbor(value: CborValue): Uint8Array<ArrayBuffer> {
 
 function head(out: number[], major: number, n: number | bigint) {
   const v = BigInt(n);
-  if (v < 0n) throw new CborError("Negative CBOR argument");
+  // Callers never pass a negative argument; a bigint of 2^64 or more would be truncated.
+  if (v < 0n || v >= 1n << 64n) throw new CborError("CBOR argument out of range");
   if (v < 24n) out.push((major << 5) | Number(v));
   else if (v < 0x100n) out.push((major << 5) | 24, Number(v));
   else if (v < 0x10000n) out.push((major << 5) | 25, Number(v >> 8n), Number(v & 0xffn));

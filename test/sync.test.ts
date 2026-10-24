@@ -204,6 +204,7 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       await server.addItem({ name: "no-folder", value: "1" });
       await server.addItem({ folder: "work", name: "in-work", value: "2" });
       await server.addItem({ name: "Not marked", value: "3", id: null });
+      (await server.addItem({ name: "No fields", value: "4", id: null })).fields = null;
       expect((await a.controller.sync()).pulled.sort()).toEqual(["in-work", "no-folder"]);
       // Moving an item between folders changes nothing.
       server.ciphers[0]!.folderId = "work";
@@ -346,13 +347,16 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       it.each([
         ["empty", ""],
         ["whitespace", "  \t"],
+        ["without a value", null],
       ])("never overwrite the user's notes when obsidian:location is %s", async (_kind, location) => {
         const note = await server.addItem({
           name: "note",
           value: "token",
           defaultValue: "my own notes",
-          extraFields: [["obsidian:location", location]],
+          extraFields: [["obsidian:location", location ?? ""]],
         });
+        // Fields: obsidian:id, unrelated, obsidian:location, obsidian:password.
+        if (location === null) note.fields![2]!.value = null;
         await a.controller.sync();
         expect(a.store.get("note")).toBe("token");
         const before = structuredClone(server.ciphers);
@@ -364,6 +368,20 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(await decryptString(server.ciphers.find((x) => x.id === note.id)!.notes!, server.account.userKey)).toBe(
           "my own notes",
         );
+      });
+
+      it.each([
+        ["empty", ""],
+        ["whitespace", "  \t"],
+      ])("keep a login's value in its own password when obsidian:location is %s", async (_kind, location) => {
+        const login = await server.addItem({ name: "site", type: 1, value: "pw", extraFields: [["obsidian:location", location]] });
+        await a.controller.sync();
+        expect(a.store.get("site")).toBe("pw");
+        a.store.set("site", "rotated");
+        expect((await a.controller.sync()).pushed).toEqual(["site"]);
+        expect(await remoteValue(login.id)).toBe("rotated");
+        const after = server.ciphers.find((x) => x.id === login.id)!;
+        expect(await decryptString(after.notes!, server.account.userKey)).toBe("login notes");
       });
 
       it("move into empty notes over an empty obsidian:location, setting it to notes", async () => {
@@ -453,6 +471,7 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
     });
 
     it("files uploads in the configured folder, or in none", async () => {
+      await server.addFolder("work");
       a.store.set("first", "1");
       a.controller.queueUpload("first", { kind: "global" });
       await a.controller.sync();
@@ -464,7 +483,7 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       a.controller.queueUpload("second", { kind: "global" });
       await a.controller.sync();
       expect(server.ciphers[1]!.folderId).toBeNull();
-      expect(server.folders).toHaveLength(1);
+      expect(server.folders).toHaveLength(2);
     });
 
     it("respects vault and device scopes", async () => {
@@ -492,10 +511,18 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
     });
 
     it("never lets Bitwarden overwrite the plugin's own credentials", async () => {
-      await server.addItem({ name: "keychain-bitwarden-client-secret", value: "evil" });
+      const secret = await server.addItem({ name: "keychain-bitwarden-client-secret", value: "evil" });
+      // One this device does not hold yet would otherwise be pulled without a conflict.
+      const unused = await server.addItem({ name: "keychain-bitwarden-new-setting", value: "evil" });
+      const legacy = await server.addItem({ name: "bitwarden-secrets-new-setting", value: "evil" });
       const r = await a.controller.sync();
       expect(r.pulled).toEqual([]);
+      expect(r.conflicts).toEqual([]);
+      expect(r.skipped.map((s) => s.cipherId).sort()).toEqual([secret.id, unused.id, legacy.id].sort());
+      expect(r.skipped.map((s) => s.reason)).toContainEqual('id "keychain-bitwarden-new-setting" is reserved for the plugin');
       expect(a.store.get("keychain-bitwarden-client-secret")).toBe(server.account.clientSecret);
+      expect(a.store.get("keychain-bitwarden-new-setting")).toBeNull();
+      expect(a.store.get("bitwarden-secrets-new-setting")).toBeNull();
     });
 
     it("keeps credentials left under the pre-rename prefix out of sync and uploads", async () => {
@@ -574,8 +601,165 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(JSON.stringify(a.state())).not.toContain('"v"');
     });
 
+    it("prefers a duplicate with a creation date, then the lowest item id", async () => {
+      const undated = await server.addItem({ name: "dup", value: "undated" });
+      undated.creationDate = null; // older servers send none
+      await server.addItem({ name: "Dup", id: "dup", value: "dated" });
+      // Same creation date: the lowest item id wins, wherever it is listed.
+      const tie1 = await server.addItem({ name: "tie", value: "listed first" });
+      const tie2 = await server.addItem({ name: "Tie", id: "tie", value: "lowest id" });
+      tie2.creationDate = tie1.creationDate;
+      tie1.id = "b-item";
+      tie2.id = "a-item";
+      const other1 = await server.addItem({ name: "other", value: "lowest id" });
+      const other2 = await server.addItem({ name: "Other", id: "other", value: "listed last" });
+      other2.creationDate = other1.creationDate;
+      other1.id = "c-item";
+      other2.id = "d-item";
+      const r = await a.controller.sync();
+      expect(a.store.get("dup")).toBe("dated");
+      expect(a.store.get("tie")).toBe("lowest id");
+      expect(a.store.get("other")).toBe("lowest id");
+      expect(r.skipped.map((s) => s.cipherId).sort()).toEqual([undated.id, "b-item", "d-item"].sort());
+    });
+
+    it("skips marked items other than logins and secure notes", async () => {
+      const card = await server.addItem({ name: "card", value: "v" });
+      card.type = 3;
+      const r = await a.controller.sync();
+      expect(r.skipped).toEqual([{ cipherId: card.id, reason: "only login and secure note items are synced" }]);
+      expect(a.store.get("card")).toBeNull();
+    });
+
+    it("reads a field or item part the server sends without a value as empty", async () => {
+      const noId = await server.addItem({ name: "no-id", value: "v" });
+      noId.fields![0]!.value = null; // the obsidian:id field
+      const unnamed = await server.addItem({ name: "unnamed", value: "v" });
+      unnamed.name = null as unknown as string;
+      const r = await a.controller.sync();
+      expect(r.skipped).toEqual([{ cipherId: noId.id, reason: '"obsidian:id" must be lowercase letters, digits and dashes' }]);
+      expect(r.pulled).toEqual(["unnamed"]);
+      a.store.set("unnamed", "local");
+      await server.editValue(unnamed.id, "remote");
+      expect((await a.controller.sync()).conflicts).toEqual([{ id: "unnamed", kind: "both-changed", label: "" }]);
+    });
+
+    it("pushes to items missing their login or secure note part", async () => {
+      const login = await server.addItem({ name: "bare-login", type: 1, value: "x" });
+      login.login = null;
+      const note = await server.addItem({ name: "bare-note", value: "n" });
+      note.secureNote = null;
+      await a.controller.sync();
+      expect(a.store.get("bare-login")).toBe("");
+      a.store.set("bare-login", "pw");
+      a.store.set("bare-note", "edited");
+      expect((await a.controller.sync()).pushed).toEqual(["bare-login", "bare-note"]);
+      expect(await remoteValue(login.id)).toBe("pw");
+      expect(await remoteValue(note.id)).toBe("edited");
+      expect(server.ciphers.find((c) => c.id === note.id)!.secureNote).toEqual({ type: 0 });
+      expect((await b.controller.sync()).pulled).toEqual(["bare-login", "bare-note"]);
+      expect(b.store.get("bare-login")).toBe("pw");
+    });
+
+    it("uploads and pushes an empty secret as no value", async () => {
+      const login = await server.addItem({ name: "site", type: 1, value: "pw" });
+      const note = await server.addItem({ name: "note", value: "token", defaultValue: "my own notes" });
+      a.store.set("blank", "");
+      a.controller.queueUpload("blank", { kind: "global" });
+      expect((await a.controller.sync()).created).toEqual(["blank"]);
+      a.store.set("site", "");
+      a.store.set("note", "");
+      expect((await a.controller.sync()).pushed).toEqual(["note", "site"]);
+      const blank = server.ciphers.at(-1)!;
+      const valueOf = async (cipherId: string) => {
+        const c = server.ciphers.find((x) => x.id === cipherId)!;
+        for (const f of c.fields ?? []) {
+          if ((await decryptString(f.name!, server.account.userKey)) === "obsidian:password") return f.value;
+        }
+        return undefined;
+      };
+      expect(await valueOf(blank.id)).toBeNull();
+      expect(blank.notes).toBeNull();
+      expect(await valueOf(note.id)).toBeNull();
+      expect(await decryptString(server.ciphers.find((x) => x.id === note.id)!.notes!, server.account.userKey)).toBe("my own notes");
+      expect(server.ciphers.find((x) => x.id === login.id)!.login!.password).toBeNull();
+      expect((await b.controller.sync()).pulled).toEqual(["blank", "note", "site"]);
+      for (const id of ["blank", "note", "site"]) expect(b.store.get(id)).toBe("");
+    });
+
+    it("gives up after three passes when an item keeps changing under the push", async () => {
+      const c = await server.addItem({ name: "k", value: "v1" });
+      await a.controller.sync();
+      a.store.set("k", "mine");
+      server.beforeUpdate = (id) => {
+        server.ciphers.find((x) => x.id === id)!.revisionDate = server.nextRevision();
+      };
+      const r = await a.controller.sync();
+      expect(r.passes).toBe(3);
+      expect(r.pushed).toEqual([]);
+      expect(r.errors).toEqual(["Secrets kept changing during the sync; try again later."]);
+      expect(await remoteValue(c.id)).toBe("v1");
+      expect(a.store.get("k")).toBe("mine");
+    });
+
+    it("forgets a secret gone from both Bitwarden and this device, and a queued upload whose value is gone", async () => {
+      const c = await server.addItem({ name: "k", value: "v" });
+      await server.addItem({ name: "pad", value: "p" });
+      await a.controller.sync();
+      c.deletedDate = server.nextRevision();
+      a.store.values.delete("k");
+      a.store.set("queued", "x");
+      a.controller.queueUpload("queued", { kind: "device", id: "" });
+      a.store.values.delete("queued");
+      const r = await a.controller.sync();
+      expect([...r.pulled, ...r.created, ...r.cleared, ...r.conflicts, ...r.errors]).toEqual([]);
+      expect(Object.keys(a.state().base)).toEqual(["pad"]);
+      expect(a.state().pendingCreates).toEqual([]);
+      expect(a.state().pendingScopes).toEqual({});
+      expect(server.ciphers.filter((x) => !x.deletedDate)).toHaveLength(1);
+    });
+
+    it("uploads with the global scope when the queued scope is not one it knows", async () => {
+      const d = makeDevice(server.http, server.account);
+      d.localStorage.set("state", { version: 1, deviceId: "d1", base: {}, pendingCreates: ["k"], pendingScopes: { k: "planet:mars" } });
+      d.store.set("k", "v");
+      await unlocked(d);
+      expect((await d.controller.sync()).created).toEqual(["k"]);
+      const names = await Promise.all(server.ciphers[0]!.fields!.map((f) => decryptString(f.name!, server.account.userKey)));
+      expect(names).not.toContain("obsidian:scope");
+      expect(d.state().base.k!.scope).toBe("global");
+      expect((await b.controller.sync()).pulled).toEqual(["k"]);
+    });
+
     // Regression tests for the security review.
     describe("audit regressions", () => {
+      it("keeps a secret whose item key can no longer be unwrapped instead of clearing it", async () => {
+        const c = await server.addItem({ name: "k", value: "v", itemKey: true });
+        await server.addItem({ name: "other", value: "o" });
+        await a.controller.sync();
+        c.key = tamper(c.key!);
+        const r = await a.controller.sync();
+        expect(r.cleared).toEqual([]);
+        expect(a.store.get("k")).toBe("v");
+        expect(a.state().base.k!.cipherId).toBe(c.id);
+        expect(r.skipped).toEqual([{ cipherId: c.id, reason: '"k" is kept as is: its item can no longer be used' }]);
+      });
+
+      it("does not clear a secret edited while the sync is running", async () => {
+        const first = await server.addItem({ name: "a-first", value: "1" });
+        const gone = await server.addItem({ name: "b-gone", value: "1" });
+        await a.controller.sync();
+        a.store.set("a-first", "pushed");
+        gone.deletedDate = server.nextRevision();
+        server.beforeUpdate = (id) => {
+          if (id === first.id) a.store.set("b-gone", "typed meanwhile");
+        };
+        const r = await a.controller.sync();
+        expect(r.cleared).toEqual([]);
+        expect(a.store.get("b-gone")).toBe("typed meanwhile");
+        expect(r.conflicts.map((x) => [x.id, x.kind])).toEqual([["b-gone", "deleted-remotely"]]);
+      });
+
       it("keeps a secret whose item became unreadable instead of clearing it", async () => {
         const c = await server.addItem({ name: "k", value: "v" });
         await server.addItem({ name: "other", value: "o" });

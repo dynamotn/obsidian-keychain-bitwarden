@@ -407,7 +407,8 @@ export async function updateValueRequest(
       organizationId: c.organizationId ?? null,
       name: c.name,
       notes: c.notes,
-      fields: c.fields ?? [],
+      // A marked item always has fields: its obsidian:id is one of them.
+      fields: c.fields!,
       favorite: c.favorite ?? false,
       reprompt: c.reprompt ?? 0,
       key: c.key ?? null,

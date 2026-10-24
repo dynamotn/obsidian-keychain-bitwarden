@@ -222,6 +222,62 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(r.errors).toEqual([expect.stringMatching(new RegExp(`organization ${broken}`))]);
     });
 
+    it("report an unreadable organization key once, even when the sync takes another pass", async () => {
+      const broken = await server.addOrganization({ key: "4.AAAA" });
+      const c = await server.addItem({ name: "personal", value: "p" });
+      await a.controller.sync();
+      a.store.set("personal", "edited");
+      let raced = false;
+      server.beforeUpdate = (id) => {
+        if (!raced && id === c.id) {
+          raced = true;
+          server.ciphers.find((x) => x.id === id)!.revisionDate = server.nextRevision();
+        }
+      };
+      const r = await a.controller.sync();
+      expect(r.passes).toBe(2);
+      expect(r.pushed).toEqual(["personal"]);
+      expect(r.errors).toEqual([expect.stringMatching(new RegExp(`organization ${broken}`))]);
+    });
+
+    it("report an account without a private key, and personal items still sync", async () => {
+      await server.addItem({ name: "personal", value: "p" });
+      await server.addItem({ name: "team-token", value: "t", organization: org });
+      (server as unknown as { privateKey: string | null }).privateKey = null;
+      const r = await a.controller.sync();
+      expect(r.pulled).toEqual(["personal"]);
+      expect(a.store.get("team-token")).toBeNull();
+      expect(r.errors).toEqual(["the account has no private key to read organization keys"]);
+    });
+
+    it("are left alone when their organization is disabled", async () => {
+      server.organizations[0]!.enabled = false;
+      await server.addItem({ name: "personal", value: "p" });
+      await server.addItem({ name: "team-token", value: "t", organization: org });
+      const r = await a.controller.sync();
+      expect(r.pulled).toEqual(["personal"]);
+      expect(a.store.get("team-token")).toBeNull();
+      expect(r.errors).toEqual([]);
+    });
+
+    it("are not needed for personal items to sync when the server lists no organizations", async () => {
+      (server as unknown as { organizations?: unknown }).organizations = undefined;
+      await server.addItem({ name: "personal", value: "p" });
+      const r = await a.controller.sync();
+      expect(r.pulled).toEqual(["personal"]);
+      expect(r.errors).toEqual([]);
+    });
+
+    it("are named by the organization's id when it has no name", async () => {
+      server.organizations[0]!.name = "  ";
+      await server.addItem({ name: "team-token", value: "theirs", organization: org });
+      await a.controller.sync();
+      a.store.set("team-token", "mine");
+      expect((await a.controller.sync()).conflicts).toEqual([
+        { id: "team-token", kind: "organization-push", label: "team-token", organization: org },
+      ]);
+    });
+
     it.each([
       ["control characters and line breaks", "Acme\u0000\u001b[2J\r\nTeam\u0085", "Acme [2J Team"],
       ["characters that reorder text", "Acme\u202e\u2066Team\u2069\u200f", "AcmeTeam"],
@@ -244,6 +300,36 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       await a.controller.sync();
       a.store.set("team-token", "mine");
       expect((await a.controller.sync()).conflicts.map((c) => c.organization)).toEqual([org]);
+    });
+
+    it("stop taking pushes once the organization takes the right to edit away, even after a confirmation", async () => {
+      const c = await server.addItem({ name: "team-token", value: "old", organization: org });
+      await a.controller.sync();
+      a.store.set("team-token", "one");
+      await a.controller.sync(new Map([["team-token", { policy: "prefer-local", kind: "organization-push" }]]));
+      expect(a.state().base["team-token"]!.pushConfirmed).toBe(true);
+      server.ciphers.find((x) => x.id === c.id)!.edit = false;
+      a.store.set("team-token", "two");
+      const r = await a.controller.sync();
+      expect(r.pushed).toEqual([]);
+      expect(r.errors).toEqual([]);
+      expect(r.skipped).toContainEqual({ cipherId: c.id, reason: expect.stringMatching(/does not let you edit/) });
+      expect(await remoteValue(c.id)).toBe("one");
+      expect(a.store.get("team-token")).toBe("two");
+    });
+
+    it("upload nothing when a claim is declined for a secret this device no longer holds", async () => {
+      const personal = await server.addItem({ name: "api-key", value: "mine" });
+      const pad = await server.addItem({ name: "pad", value: "p" });
+      await a.controller.sync();
+      personal.deletedDate = server.nextRevision();
+      const planted = await server.addItem({ name: "api-key", value: "planted", organization: org });
+      a.store.values.delete("api-key");
+      const r = await a.controller.sync(new Map([["api-key", { policy: "prefer-local", kind: "organization-claim" }]]));
+      expect([...r.created, ...r.pushed, ...r.pulled, ...r.errors]).toEqual([]);
+      expect(server.ciphers.filter((c) => !c.deletedDate).map((c) => c.id)).toEqual([pad.id, planted.id]);
+      expect(await remoteValue(planted.id)).toBe("planted");
+      expect(a.store.get("api-key")).toBeNull();
     });
 
     it("are never where new uploads go", async () => {

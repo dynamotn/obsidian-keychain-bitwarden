@@ -217,6 +217,7 @@ npm run lint               # eslint-plugin-obsidianmd, the rules of the communit
 npm run build              # typecheck (TypeScript 7) + production bundle (main.js)
 npm run check:bundle       # bundle may only require "obsidian", no Node globals
 npm test                   # unit + multi-device sync tests (in-memory Bitwarden)
+npm run test:coverage      # the same, failing below 100% coverage of the code that runs without Obsidian
 npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (≈ Android)
 npm run perf               # performance budgets (add :browser for WebKit/Chromium)
 
