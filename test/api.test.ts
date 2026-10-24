@@ -39,6 +39,20 @@ describe("normalizeKeys", () => {
   });
 });
 
+describe("normalizeKeys from an untrusted server", () => {
+  it("never lets a __proto__ key replace an object's prototype", () => {
+    const out = normalizeKeys(JSON.parse('{"__proto__":{"polluted":true},"Profile":{"__proto__":{"key":"x"}}}')) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(out.polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(out.profile)).toBe(Object.prototype);
+    expect(out.profile!.key).toBeUndefined();
+    expect(Object.keys(out)).toEqual(["profile"]);
+  });
+});
+
 describe("BitwardenApiError", () => {
   it("recognises out-of-date edits", () => {
     expect(new BitwardenApiError(400, "HTTP 400: The cipher you are updating is out of date.").isOutOfDate).toBe(true);

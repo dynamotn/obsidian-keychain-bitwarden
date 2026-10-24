@@ -190,7 +190,11 @@ export function normalizeKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeKeys);
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k.charAt(0).toLowerCase() + k.slice(1)] = normalizeKeys(v);
+    for (const [k, v] of Object.entries(value)) {
+      // Assigning it would replace the object's prototype; no Bitwarden response has such a key.
+      if (k === "__proto__") continue;
+      out[k.charAt(0).toLowerCase() + k.slice(1)] = normalizeKeys(v);
+    }
     return out;
   }
   return value;
