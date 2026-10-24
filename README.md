@@ -162,8 +162,9 @@ running is never overwritten.
   vault's device-local storage, not in `data.json`. `data.json` is often
   synced or committed, and whoever can edit it must not be able to send your
   API key to their own server.
-- **The API key is tied to its server.** If you change the server URL, you
-  have to enter the key again.
+- **The API key is tied to its server.** If you change the server URL, the
+  next login clears the saved key instead of sending it, and you have to
+  enter it again, even if you change the URL back.
 - **Only authenticated encryption is accepted.** That means Bitwarden's
   AES-CBC + HMAC (type 2, the MAC checked first) and its COSE format
   (type 7, XAES-256-GCM or XChaCha20-Poly1305). A COSE ciphertext must name

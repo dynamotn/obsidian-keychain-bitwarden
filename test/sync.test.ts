@@ -649,6 +649,20 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(d.store.get("keychain-bitwarden-api-origin")).toBe("https://evil.example");
       });
 
+      it("clears the API key once it meets another server, so it is never sent there later", async () => {
+        const d = makeDevice(server.http, server.account);
+        d.settings.serverUrl = "https://evil.example";
+        await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/saved for https:\/\/bw\.test/);
+        expect(d.store.get("keychain-bitwarden-client-id")).toBe("");
+        expect(d.store.get("keychain-bitwarden-client-secret")).toBe("");
+        expect(d.store.get("keychain-bitwarden-api-origin")).toBe("");
+        // Switching back does not bring it back either: it has to be entered again.
+        d.settings.serverUrl = "https://bw.test";
+        server.requests = [];
+        await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/Set the Bitwarden API key/);
+        expect(server.requests).toHaveLength(0);
+      });
+
       it("does not carry one part of the API key over to another server", async () => {
         const d = makeDevice(server.http, server.account);
         d.settings.serverUrl = "https://evil.example";

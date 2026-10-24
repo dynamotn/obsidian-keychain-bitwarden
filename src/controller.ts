@@ -115,6 +115,9 @@ export class SecretsController {
     const boundTo = this.deps.store.get(SECRET_API_ORIGIN);
     const origin = this.identityOrigin();
     if (boundTo !== origin) {
+      // The server changed since the key was entered: forget it, so that no
+      // later setting, typo or edited config can send it anywhere.
+      for (const id of [SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SECRET_API_ORIGIN]) this.deps.store.set(id, "");
       throw new Error(
         `The API key was saved for ${boundTo || "another server"}, not ${origin}. ` +
           `Enter the API key again in the plugin settings to use it with this server.`,
