@@ -25,9 +25,9 @@ jobs:
         with:
           persist-credentials: false
       # No dependency cache: a release is built from the lockfile alone. setup-node
-      # v4.4.0 (the commit below) caches only when `cache` is set; caching by
-      # default, which zizmor assumes, came in v5.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # zizmor: ignore[cache-poisoning]
+      # v4 caches only when `cache` is set; caching by default, which zizmor
+      # assumes, came in v5.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # zizmor: ignore[cache-poisoning] v4.4.0
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
@@ -52,10 +52,8 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm run check:bundle
-      - run: npm test
-      - run: npx playwright install --with-deps chromium webkit
-      - run: npm run test:browser
-
+      # Handed over before the tests run, so test dependencies never get to touch
+      # the files; publish still waits for this whole job to pass.
       - run: sha256sum main.js manifest.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -65,6 +63,9 @@ jobs:
             manifest.json
           if-no-files-found: error
           retention-days: 1
+      - run: npm run test:coverage
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:browser
 
   publish:
     needs: build
