@@ -105,6 +105,8 @@ export interface OrganizationDto {
   /** The organization key, RSA-encrypted to this account; absent until the membership is confirmed. */
   key?: string | null;
   enabled?: boolean;
+  /** Plain text, chosen by the organization's owners. */
+  name?: string | null;
 }
 
 export interface SyncDto {

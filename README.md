@@ -127,6 +127,11 @@ organizations that carry an `obsidian:id` field:
   written to, never replaces your value and is never linked to it silently,
   even with the same value: you are always asked, whatever the conflict
   policy. Keeping yours uploads it as a personal item.
+- Nothing of yours is sent to an organization item until you agree, once
+  per item, in the conflict dialog that names the organization, whatever
+  the conflict policy. Pulling an item, even after you confirmed its claim,
+  binds the id for pulls only; your first edit of it asks
+  (`organization-push`). "Use the organization's" takes its value instead.
 - New uploads are always personal items.
 
 It is off by default: see [Security](#security) for why.

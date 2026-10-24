@@ -69,6 +69,8 @@ export interface ConflictInfo {
   id: string;
   kind: ConflictKind;
   label: string;
+  /** The organization the item belongs to, by name when the server sends one. */
+  organization?: string;
 }
 
 export interface SyncReport {
@@ -283,6 +285,14 @@ interface PassData {
   orgKeys: OrganizationKeys | null;
 }
 
+const readOnlyReason = (id: string) =>
+  `"${id}" changed on this device, but its organization does not let you edit it; not uploaded`;
+
+function organizationName(sync: SyncDto, organizationId: string): string {
+  const name = sync.profile.organizations?.find((o) => o.id === organizationId)?.name?.trim();
+  return name || organizationId;
+}
+
 /** True when the local value changed since this pass read it. */
 async function localMoved(ctx: SyncContext, pass: PassData, id: string): Promise<boolean> {
   const now = ctx.store.get(id);
@@ -298,7 +308,11 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
   const localFingerprint = pass.localFingerprints.get(id) ?? null;
   const remoteBase = (): BaseEntry => {
     const r = pass.remote.get(id)!;
-    return { cipherId: r.cipherId, revisionDate: r.revisionDate, fingerprint: r.fingerprint, scope: formatScope(rec!.scope) };
+    const entry: BaseEntry = { cipherId: r.cipherId, revisionDate: r.revisionDate, fingerprint: r.fingerprint, scope: formatScope(rec!.scope) };
+    // A confirmation to push belongs to the one item it was given for.
+    const previous = state.base[id];
+    if (previous?.pushConfirmed && previous.cipherId === r.cipherId) entry.pushConfirmed = true;
+    return entry;
   };
   const dropPending = () => {
     state.pendingCreates = state.pendingCreates.filter((p) => p !== id);
@@ -328,11 +342,13 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
       if (rec.organizationId && state.base[id]?.cipherId !== rec.cipherId) {
         throw new Error("refusing to upload to an organization item this secret was not synced with");
       }
+      // Being bound is not enough: a pull binds without asking, so the user must have agreed to send values there.
+      const confirmed = Boolean(rec.organizationId) && (action.confirmed === true || state.base[id]?.pushConfirmed === true);
+      if (rec.organizationId && !confirmed) {
+        throw new Error("refusing to upload to an organization item without your confirmation");
+      }
       if (rec.readOnly) {
-        report.skipped.push({
-          cipherId: rec.cipherId,
-          reason: `"${id}" changed on this device, but its organization does not let you edit it; not uploaded`,
-        });
+        report.skipped.push({ cipherId: rec.cipherId, reason: readOnlyReason(id) });
         return false;
       }
       const ownerKey = ownerKeyFor(rec.cipher, userKey, pass.orgKeys);
@@ -344,6 +360,7 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
           revisionDate: res.revisionDate,
           fingerprint: localFingerprint,
           scope: formatScope(rec.scope),
+          ...(confirmed ? { pushConfirmed: true } : {}),
         };
       } catch (e) {
         if (e instanceof BitwardenApiError && e.isOutOfDate) return true;
@@ -383,7 +400,12 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
       return false;
     }
     case "conflict": {
-      report.conflicts.push({ id, kind: action.conflict, label: rec?.label ?? id });
+      if (action.conflict === "organization-push" && rec?.readOnly) {
+        report.skipped.push({ cipherId: rec.cipherId, reason: readOnlyReason(id) });
+        return false;
+      }
+      const organization = rec?.organizationId ? organizationName(pass.sync, rec.organizationId) : undefined;
+      report.conflicts.push({ id, kind: action.conflict, label: rec?.label ?? id, ...(organization ? { organization } : {}) });
       return false;
     }
   }

@@ -61,13 +61,16 @@ export class UnlockModal extends Modal {
   }
 }
 
-const CONFLICT_TEXT: Record<ConflictInfo["kind"], string> = {
-  "both-changed": "changed both here and in Bitwarden",
-  "local-unsynced": "exists here with a different value than in Bitwarden",
-  "deleted-remotely": "was deleted in Bitwarden but edited here",
-  "organization-claim":
-    "is claimed by an organization item this device has not synced before; anyone in that organization can see " +
-    "its value. Keeping yours uploads it as a personal item instead",
+const CONFLICT_TEXT: Record<ConflictInfo["kind"], (organization: string) => string> = {
+  "both-changed": () => "changed both here and in Bitwarden",
+  "local-unsynced": () => "exists here with a different value than in Bitwarden",
+  "deleted-remotely": () => "was deleted in Bitwarden but edited here",
+  "organization-claim": (org) =>
+    `is claimed by an item of the organization "${org}" that this device has not synced before; anyone in that ` +
+    "organization can see its value. Keeping yours uploads it as a personal item instead",
+  "organization-push": (org) =>
+    `changed here, and its item belongs to the organization "${org}": anyone in it would see your value. ` +
+    "Nothing is sent to an organization item until you agree once",
 };
 
 const CHOICE_TEXT: Record<ConflictInfo["kind"], [remote: string, local: string]> = {
@@ -75,6 +78,7 @@ const CHOICE_TEXT: Record<ConflictInfo["kind"], [remote: string, local: string]>
   "local-unsynced": ["Use Bitwarden", "Use this device"],
   "deleted-remotely": ["Clear on this device", "Upload again"],
   "organization-claim": ["Use the organization's", "Keep mine, as a personal item"],
+  "organization-push": ["Use the organization's", "Send mine to the organization"],
 };
 
 export class ConflictModal extends Modal {
@@ -95,7 +99,7 @@ export class ConflictModal extends Modal {
     for (const c of this.conflicts) {
       new Setting(contentEl)
         .setName(c.label === c.id ? c.id : `${c.label} (${c.id})`)
-        .setDesc(CONFLICT_TEXT[c.kind])
+        .setDesc(CONFLICT_TEXT[c.kind](c.organization ?? "unknown"))
         .addDropdown((d) =>
           d
             .addOption("", "Decide later")

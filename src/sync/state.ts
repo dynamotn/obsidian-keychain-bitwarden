@@ -40,6 +40,7 @@ export function parseDeviceState(raw: unknown): DeviceState {
       if (entry && isStr(entry.cipherId) && isStr(entry.revisionDate) && isStr(entry.fingerprint)) {
         const parsed: BaseEntry = { cipherId: entry.cipherId, revisionDate: entry.revisionDate, fingerprint: entry.fingerprint };
         if (isStr(entry.scope)) parsed.scope = entry.scope;
+        if (entry.pushConfirmed === true) parsed.pushConfirmed = true;
         base[id] = parsed;
       }
     }

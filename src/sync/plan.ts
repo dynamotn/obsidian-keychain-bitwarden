@@ -9,6 +9,11 @@ export interface BaseEntry {
   fingerprint: string;
   /** Scope of the Bitwarden item, so a re-upload keeps it ("global" when absent). */
   scope?: string;
+  /**
+   * Organization items only: the user agreed to send this device's values to
+   * the item. A binding made by a pull, even a confirmed claim, is pull-only.
+   */
+  pushConfirmed?: boolean;
 }
 
 export interface RemoteEntry {
@@ -25,11 +30,12 @@ export interface LocalEntry {
   fingerprint: string | null;
 }
 
-export type ConflictKind = "both-changed" | "local-unsynced" | "deleted-remotely" | "organization-claim";
+export type ConflictKind = "both-changed" | "local-unsynced" | "deleted-remotely" | "organization-claim" | "organization-push";
 
 export type Action =
   | { kind: "pull"; id: string }
-  | { kind: "push"; id: string }
+  /** `confirmed`: the user just agreed to this first push to an organization item. */
+  | { kind: "push"; id: string; confirmed?: true }
   | { kind: "create"; id: string }
   | { kind: "adopt"; id: string }
   | { kind: "clear-local"; id: string }
@@ -60,13 +66,25 @@ export function planSync(input: PlanInput): Action[] {
   const actions: Action[] = [];
   const ids = new Set<string>([...remote.keys(), ...base.keys(), ...pendingCreates]);
 
+  // An organization item's members see whatever is pushed to it, and anyone
+  // among them may have planted it: the first push to it is always asked.
+  const push = (id: string): Action => {
+    const r = remote.get(id);
+    return r?.organization === true && base.get(id)?.pushConfirmed !== true
+      ? resolve(id, "organization-push")
+      : { kind: "push", id };
+  };
+
   const resolve = (id: string, conflict: ConflictKind): Action => {
     const override = input.overrides?.get(id);
     // A local value that was never synced may belong to someone else (another
     // plugin, a stale device), and an organization item new to this id may
     // have been planted by anyone in it: only an explicit decision may
     // overwrite either side.
-    const fallback = conflict === "local-unsynced" || conflict === "organization-claim" ? "ask" : input.policy;
+    const fallback =
+      conflict === "local-unsynced" || conflict === "organization-claim" || conflict === "organization-push"
+        ? "ask"
+        : input.policy;
     const policy = override && override.kind === conflict ? override.policy : fallback;
     if (policy === "prefer-remote") {
       return conflict === "deleted-remotely" ? { kind: "clear-local", id } : { kind: "pull", id };
@@ -74,9 +92,8 @@ export function planSync(input: PlanInput): Action[] {
     if (policy === "prefer-local") {
       // Keeping the local value next to a claiming organization item uploads
       // it as a new personal item, which then wins; it is never sent to the organization.
-      return conflict === "deleted-remotely" || conflict === "organization-claim"
-        ? { kind: "create", id }
-        : { kind: "push", id };
+      if (conflict === "deleted-remotely" || conflict === "organization-claim") return { kind: "create", id };
+      return conflict === "organization-push" ? { kind: "push", id, confirmed: true } : push(id);
     }
     return { kind: "conflict", id, conflict };
   };
@@ -120,7 +137,7 @@ export function planSync(input: PlanInput): Action[] {
         continue;
       }
       if (remoteChanged && !localChanged) actions.push({ kind: "pull", id });
-      else if (!remoteChanged && localChanged) actions.push({ kind: "push", id });
+      else if (!remoteChanged && localChanged) actions.push(push(id));
       else if (l.fingerprint === r.fingerprint) actions.push({ kind: "adopt", id });
       else actions.push(resolve(id, "both-changed"));
       continue;

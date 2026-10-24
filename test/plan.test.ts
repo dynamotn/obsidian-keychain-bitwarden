@@ -172,8 +172,45 @@ describe("planSync", () => {
 
     it("still pulls onto an empty device and pushes to the organization item it synced with", () => {
       expect(plan({ remote: [R("a", "1", "theirs", "org-1", true)] })).toEqual([{ kind: "pull", id: "a" }]);
-      const base: [string, BaseEntry][] = [["a", B("a", "1", "x", "org-1")]];
+      const base: [string, BaseEntry][] = [["a", { ...B("a", "1", "x", "org-1"), pushConfirmed: true }]];
       expect(plan({ remote: [R("a", "1", "x", "org-1", true)], base, local: { a: "y" } })).toEqual([{ kind: "push", id: "a" }]);
+    });
+  });
+
+  describe("the first push to an organization item", () => {
+    const policies: ConflictPolicy[] = ["ask", "prefer-local", "prefer-remote"];
+    const remote = [R("a", "1", "x", "org-1", true)];
+    // What a silent pull onto an empty device leaves behind: bound, but never confirmed.
+    const base: [string, BaseEntry][] = [["a", B("a", "1", "x", "org-1")]];
+    const ask = [{ kind: "conflict", id: "a", conflict: "organization-push" }];
+
+    it("is always asked, whatever the policy", () => {
+      for (const policy of policies) expect(plan({ remote, base, local: { a: "mine" }, policy })).toEqual(ask);
+    });
+
+    it("is asked when prefer-local settles a both-changed conflict", () => {
+      const changed = [R("a", "2", "theirs", "org-1", true)];
+      expect(plan({ remote: changed, base, local: { a: "mine" }, policy: "prefer-local" })).toEqual(ask);
+    });
+
+    it("pushes, marked as confirmed, only once the user agreed to it", () => {
+      const run = (policy: "prefer-local" | "prefer-remote", kind: "organization-push" | "both-changed") =>
+        planSync({
+          remote: new Map(remote.map((r) => [r.id, r])),
+          base: new Map(base),
+          local: () => ({ fingerprint: "mine" }),
+          pendingCreates: new Set(),
+          policy: "prefer-local",
+          overrides: new Map([["a", { policy, kind }]]),
+        });
+      expect(run("prefer-local", "organization-push")).toEqual([{ kind: "push", id: "a", confirmed: true }]);
+      expect(run("prefer-remote", "organization-push")).toEqual([{ kind: "pull", id: "a" }]);
+      expect(run("prefer-local", "both-changed")).toEqual(ask);
+    });
+
+    it("never asks for personal items", () => {
+      const personal = [R("a", "1", "x", "c-a")];
+      expect(plan({ remote: personal, base: [["a", B("a", "1", "x")]], local: { a: "y" } })).toEqual([{ kind: "push", id: "a" }]);
     });
   });
 });

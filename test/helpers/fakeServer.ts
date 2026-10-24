@@ -111,7 +111,12 @@ export class FakeBitwardenServer {
       "encrypt",
     ]);
     const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, pub, orgKey.exportBytes()));
-    this.organizations.push({ id, key: opts.key === undefined ? `${type}.${toBase64(wrapped)}` : opts.key, enabled: true });
+    this.organizations.push({
+      id,
+      name: `Team ${this.organizations.length + 1}`,
+      key: opts.key === undefined ? `${type}.${toBase64(wrapped)}` : opts.key,
+      enabled: true,
+    });
     return id;
   }
 

@@ -178,6 +178,16 @@ Rules:
   the id to it, and later local edits would then go to its members. "Keep mine" creates a personal item
   (which then wins); a push only ever goes to the organization item that
   the base entry already names, and the engine refuses anything else.
+- **First push to an organization item**: a binding made by a pull,
+  whether the id was new to the device or the user confirmed a claim, is
+  pull-only. The first push to the item is the conflict `organization-push`,
+  always asked whatever the policy, naming the organization. "Send mine"
+  pushes and stores `pushConfirmed` in the base entry, which later pushes
+  and pulls of the same cipher keep; any other cipher starts without it.
+  The engine refuses a push to an organization item that has neither the
+  stored confirmation nor the one just given. A read-only item is reported
+  as not uploaded instead of asked. Base entries written before this rule
+  have no confirmation, so their first push asks once.
 - **Encoding**: secret storage holds text only, so the plugin does not
   implement the data model's `obsidian:encoding`. An item that sets it is
   skipped and reported, never misread; a secret already synced from it is
@@ -364,6 +374,7 @@ SecretStorage on this device:
 | gone | present | missing | `forget` |
 | – | – | present, queued for upload | `create` |
 | organization item, cipher ≠ base | present, or – | present, or missing with a base | conflict `organization-claim`, **always asked**; "keep mine" = `create` a personal item |
+| organization item, cipher = base, no `pushConfirmed` | present | changed | conflict `organization-push`, **always asked**; "send mine" = `push` and remember |
 
 Notes on the table:
 

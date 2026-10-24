@@ -65,4 +65,17 @@ describe("parseDeviceState", () => {
     expect(s.pendingCreates).toEqual(["x"]);
     expect(parseDeviceState("garbage").deviceId).toMatch(/[0-9a-f-]{36}/);
   });
+
+  it("keeps a confirmation to push to an organization item, and only a true one", () => {
+    const entry = { cipherId: "c", revisionDate: "r", fingerprint: "f" };
+    const s = parseDeviceState({
+      version: 1,
+      deviceId: "d1",
+      base: { a: { ...entry, pushConfirmed: true }, b: { ...entry, pushConfirmed: "yes" }, c: entry },
+      pendingCreates: [],
+    });
+    expect(s.base.a).toEqual({ ...entry, pushConfirmed: true });
+    expect(s.base.b).toEqual(entry);
+    expect(s.base.c).toEqual(entry);
+  });
 });

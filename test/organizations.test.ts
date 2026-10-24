@@ -64,7 +64,7 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       const c = await server.addItem({ name: "team-token", value: "old", organization: org, itemKey: true });
       await a.controller.sync();
       a.store.set("team-token", "new");
-      const r = await a.controller.sync();
+      const r = await a.controller.sync(new Map([["team-token", { policy: "prefer-local", kind: "organization-push" }]]));
       expect(r.pushed).toEqual(["team-token"]);
       const after = server.ciphers.find((x) => x.id === c.id)!;
       expect(after.organizationId).toBe(org);
@@ -150,6 +150,66 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(d.store.get("api-key")).toBe(local);
         expect(await remoteValue(planted.id)).toBe("planted");
       }
+    });
+
+    it("never send a later local value to an organization item that was pulled without asking", async () => {
+      // Abuse path 5 of the dybw threat model: a member plants an item for an id new to this device.
+      const d = makeDevice(server.http, server.account, { settings: { syncOrganizations: true, conflictPolicy: "prefer-local" } });
+      await d.controller.unlock(server.account.password);
+      const planted = await server.addItem({ name: "openai-key", value: "planted", organization: org });
+      expect((await d.controller.sync()).pulled).toEqual(["openai-key"]);
+      // The user pastes their own key.
+      d.store.set("openai-key", "my own key");
+      const r = await d.controller.sync();
+      expect(r.pushed).toEqual([]);
+      expect(r.errors).toEqual([]);
+      expect(r.conflicts).toEqual([{ id: "openai-key", kind: "organization-push", label: "openai-key", organization: "Team 1" }]);
+      expect(await remoteValue(planted.id)).toBe("planted");
+      expect(d.store.get("openai-key")).toBe("my own key");
+      // Asked again on every sync until the user decides.
+      expect((await d.controller.sync()).conflicts.map((c) => c.kind)).toEqual(["organization-push"]);
+      expect(await remoteValue(planted.id)).toBe("planted");
+    });
+
+    it("push to an organization item once confirmed, and then without asking again", async () => {
+      const c = await server.addItem({ name: "team-token", value: "old", organization: org });
+      await a.controller.sync();
+      a.store.set("team-token", "one");
+      expect((await a.controller.sync()).conflicts.map((x) => x.kind)).toEqual(["organization-push"]);
+      const confirm = new Map([["team-token", { policy: "prefer-local" as const, kind: "organization-push" as const }]]);
+      expect((await a.controller.sync(confirm)).pushed).toEqual(["team-token"]);
+      expect(await remoteValue(c.id)).toBe("one");
+      // A pull from the same item keeps the confirmation.
+      await server.editValue(c.id, "two");
+      expect((await a.controller.sync()).pulled).toEqual(["team-token"]);
+      a.store.set("team-token", "three");
+      const r = await a.controller.sync();
+      expect(r.conflicts).toEqual([]);
+      expect(r.pushed).toEqual(["team-token"]);
+      expect(await remoteValue(c.id)).toBe("three");
+    });
+
+    it("take the organization's value when the first push is declined", async () => {
+      const c = await server.addItem({ name: "team-token", value: "theirs", organization: org });
+      await a.controller.sync();
+      a.store.set("team-token", "mine");
+      const r = await a.controller.sync(new Map([["team-token", { policy: "prefer-remote", kind: "organization-push" }]]));
+      expect(r.pulled).toEqual(["team-token"]);
+      expect(a.store.get("team-token")).toBe("theirs");
+      expect(await remoteValue(c.id)).toBe("theirs");
+    });
+
+    it("ask before the first push even when a confirmed claim bound the id", async () => {
+      const personal = await server.addItem({ name: "api-key", value: "mine" });
+      await server.addItem({ name: "pad", value: "p" });
+      await a.controller.sync();
+      personal.deletedDate = server.nextRevision();
+      const theirs = await server.addItem({ name: "api-key", value: "theirs", organization: org });
+      const took = await a.controller.sync(new Map([["api-key", { policy: "prefer-remote", kind: "organization-claim" }]]));
+      expect(took.pulled).toEqual(["api-key"]);
+      a.store.set("api-key", "edited");
+      expect((await a.controller.sync()).conflicts.map((x) => x.kind)).toEqual(["organization-push"]);
+      expect(await remoteValue(theirs.id)).toBe("theirs");
     });
 
     it("report an organization key that cannot be read, and personal items still sync", async () => {
