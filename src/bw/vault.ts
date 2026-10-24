@@ -58,8 +58,8 @@ export interface SecretRecord {
   value: string;
   scope: Scope;
   source: ValueSource;
-  /** Index of the `obsidian:location` field, if any, whatever its value. */
-  locationField: number | null;
+  /** Indexes of every `obsidian:location` field, whatever its value; the first one counts. */
+  locationFields: number[];
   /** `notes` only when that field says the notes hold this plugin's value; an empty field claims nothing. */
   location: "notes" | null;
   /** Set for organization items; such items are encrypted with the organization's key. */
@@ -273,7 +273,7 @@ export async function readVault(
         value,
         scope,
         source,
-        locationField: locationField?.index ?? null,
+        locationFields: locationField?.indexes ?? [],
         location: location === "notes" ? "notes" : null,
         organizationId: cipher.organizationId ?? null,
         readOnly: Boolean(cipher.organizationId) && cipher.edit === false,
@@ -424,7 +424,7 @@ export async function updateValueRequest(
         if (record.location === "notes") {
           // The notes are marked as this plugin's, so they hold an older copy of the secret: drop it and the mark.
           req.notes = null;
-          req.fields = req.fields.filter((_, i) => i !== record.locationField);
+          req.fields = req.fields.filter((_, i) => !record.locationFields.includes(i));
         }
       } else {
         // Too long for a field: the notes may take it only if they hold nothing of the user's.
@@ -436,10 +436,12 @@ export async function updateValueRequest(
         }
         checkLength(encValue, NOTES_LIMIT, "the notes");
         req.notes = encValue;
-        // Every obsidian:password goes, or a duplicate would become the value source.
-        const kept = req.fields.filter((_, i) => !source.indexes.includes(i));
-        if (record.locationField === null) kept.push(await locationField(key));
-        else kept[kept.indexOf(req.fields[record.locationField]!)] = await locationField(key);
+        // Every obsidian:password goes, or a duplicate would become the value
+        // source; so does every obsidian:location but the first, which is set.
+        const [first, ...duplicates] = record.locationFields;
+        const kept = req.fields.filter((_, i) => !source.indexes.includes(i) && !duplicates.includes(i));
+        if (first === undefined) kept.push(await locationField(key));
+        else kept[kept.indexOf(req.fields[first]!)] = await locationField(key);
         req.fields = kept;
       }
     } else if (source.kind === "notes") {

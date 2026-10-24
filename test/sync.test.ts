@@ -400,6 +400,47 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(b.store.get("db")).toBe("new token");
       });
 
+      it("drop every obsidian:location with the stale notes, so a duplicate never takes over", async () => {
+        const c = await server.addItem({
+          name: "db",
+          value: "token",
+          defaultValue: "old secret",
+          extraFields: [
+            ["obsidian:location", "notes"],
+            ["obsidian:location", "attic"],
+          ],
+        });
+        await a.controller.sync();
+        a.store.set("db", "new token");
+        expect((await a.controller.sync()).pushed).toEqual(["db"]);
+        expect(server.ciphers.find((x) => x.id === c.id)!.notes).toBeNull();
+        expect((await fieldsOf(c.id)).map(([n]) => n)).not.toContain("obsidian:location");
+        // Still a usable secret, not an item skipped for an unknown location.
+        const r = await b.controller.sync();
+        expect(r.skipped).toEqual([]);
+        expect(b.store.get("db")).toBe("new token");
+      });
+
+      it("leave exactly one obsidian:location=notes when a value moves into the notes", async () => {
+        const c = await server.addItem({
+          name: "db",
+          value: "token",
+          defaultValue: "",
+          extraFields: [
+            ["obsidian:location", ""],
+            ["obsidian:location", "attic"],
+          ],
+        });
+        c.notes = null;
+        await a.controller.sync();
+        a.store.set("db", long);
+        expect((await a.controller.sync()).pushed).toEqual(["db"]);
+        const fields = await fieldsOf(c.id);
+        expect(fields.filter(([n]) => n === "obsidian:location")).toEqual([["obsidian:location", "notes"]]);
+        expect((await b.controller.sync()).pulled).toEqual(["db"]);
+        expect(b.store.get("db")).toBe(long);
+      });
+
       it("refuse an upload too long even for the notes, and keep it queued", async () => {
         a.store.set("huge", huge);
         a.controller.queueUpload("huge", { kind: "global" });
