@@ -443,6 +443,19 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(d.store.get("keychain-bitwarden-api-origin")).toBe("https://evil.example");
       });
 
+      it("does not carry one part of the API key over to another server", async () => {
+        const d = makeDevice(server.http, server.account);
+        d.settings.serverUrl = "https://evil.example";
+        d.controller.setApiKey("clientId", "attacker-chosen-id");
+        expect(d.store.get("keychain-bitwarden-client-secret")).toBe("");
+        server.requests = [];
+        await expect(d.controller.unlock(server.account.password)).rejects.toThrow(/API key/);
+        expect(server.requests).toHaveLength(0);
+        // Both parts entered for the same server keep each other.
+        d.controller.setApiKey("clientSecret", "s");
+        expect(d.store.get("keychain-bitwarden-client-id")).toBe("attacker-chosen-id");
+      });
+
       it("files uploads in the same folder on every device when several share the name", async () => {
         await server.addFolder("obsidian");
         const dup = await server.addFolder("obsidian");

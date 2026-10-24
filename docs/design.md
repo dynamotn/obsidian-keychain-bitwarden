@@ -9,7 +9,7 @@ way it is, and how it was verified. The user-facing summary is in
 - Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
   (XChaCha20-Poly1305). Everything else is WebCrypto, Web Workers, WebSocket
   and the Obsidian API.
-- Bundle: one 123.3 KiB `main.js` (production build), with the Argon2
+- Bundle: one 124.1 KiB `main.js` (production build), with the Argon2
   worker embedded in it. Its only import is `obsidian`.
 
 ## Contents
@@ -163,6 +163,12 @@ Rules:
   on. They are decrypted with their organization's key, items the user may
   not edit (`edit: false`) are only pulled, and items whose password the
   organization hides (`viewPassword: false`) are skipped.
+- **Organization claims**: an organization item whose id is new to this
+  device, or that replaces the item an id was synced with, is *claiming*
+  the id. If the local value differs, the conflict `organization-claim` is
+  always asked, whatever the policy. "Keep mine" creates a personal item
+  (which then wins); a push only ever goes to the organization item that
+  the base entry already names, and the engine refuses anything else.
 - **Excluded items**: unmarked items, trashed items (`deletedDate`), other
   item types (cards, identities, SSH keys; reported when marked), and
   organization items unless enabled (not decrypted, so not reported).
@@ -321,6 +327,7 @@ SecretStorage on this device:
 | gone | present | changed | conflict `deleted-remotely` → policy / user |
 | gone | present | missing | `forget` |
 | – | – | present, queued for upload | `create` |
+| organization item, cipher ≠ base | any | present, different from R | conflict `organization-claim`, **always asked**; "keep mine" = `create` a personal item |
 
 Notes on the table:
 
@@ -495,6 +502,13 @@ severity were fixed, each with a regression test (`test/sync.test.ts`,
 | 11 | Low | A server-set Argon2 cost could freeze a phone | Bounded (≤ 1 GiB), and run in a worker that can be cancelled and times out |
 | 12 | Low | Locking did not stop a running sync | Generation counter, checked between steps |
 | 13 | Low | Server error text was shown verbatim | Clipped to 200 characters and prefixed `server says:` |
+| 14 | High | Vault-wide scanning let any organization member claim an id: a pending upload, or a local edit after the personal item was deleted, was pushed into their item under `prefer-local` | Conflict `organization-claim`, always asked; "keep mine" creates a personal item; pushes go only to the organization item already in the base |
+| 15 | Medium | An organization item replacing a deleted personal item was pulled silently | Same `organization-claim` conflict |
+| 16 | Medium | Re-entering only the client id after changing the server rebound the stored client secret to the new server | Rebinding to another server clears the other part |
+
+Findings 14 to 16 come from a second review, after the move to vault-wide
+scanning (`test/plan.test.ts`, `test/organizations.test.ts`,
+`test/sync.test.ts`).
 
 Static analysis:
 
@@ -520,10 +534,12 @@ Static analysis:
   - with *Sync organization items* on, **forge an organization**: an
     organization key reaches the client RSA-encrypted to the account's
     public key, which the server knows. A hostile server, like any
-    organization member, can therefore create marked organization
-    items. They cannot replace a personal item's secret (personal items
-    win), but they can set or change secrets that only exist as
-    organization items. Hence the opt-in and the settings text;
+    organization member with access to a collection the user sees, can
+    therefore create marked organization items. They cannot replace a
+    personal item's secret (personal items win) nor receive a local value
+    without the user's explicit choice (`organization-claim`), but they can
+    set or change secrets that only exist as organization items. Hence the
+    opt-in and the settings text;
   - send notifications at will, which only cause coalesced extra syncs;
   - on a v2 account, serve an older user key from before a key rotation:
     the plugin does not check the signed "security state" the SDK uses
@@ -539,8 +555,8 @@ Static analysis:
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **318 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **640 passed** (320 × 2) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **331 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **666 passed** (333 × 2) |
 | Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
 | Real server + independent clients | `npm run test:integration` | **12 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |

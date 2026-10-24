@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { planSync, type BaseEntry, type ConflictPolicy, type RemoteEntry } from "../src/sync/plan";
 
-const R = (id: string, rev: string, fp: string, cipherId = `c-${id}`): RemoteEntry => ({
+const R = (id: string, rev: string, fp: string, cipherId = `c-${id}`, organization = false): RemoteEntry => ({
   id,
   cipherId,
   revisionDate: rev,
   fingerprint: fp,
+  organization,
 });
 const B = (id: string, rev: string, fp: string, cipherId = `c-${id}`): BaseEntry => ({
   cipherId,
@@ -124,5 +125,48 @@ describe("planSync", () => {
       { kind: "conflict", id: "a", conflict: "both-changed" },
       { kind: "push", id: "b" },
     ]);
+  });
+
+  describe("organization items claiming an id", () => {
+    const policies: ConflictPolicy[] = ["ask", "prefer-local", "prefer-remote"];
+
+    it("always asks before a pending or unsynced local value meets a new organization item", () => {
+      for (const policy of policies) {
+        for (const pending of [[], ["a"]]) {
+          expect(plan({ remote: [R("a", "1", "theirs", "org-1", true)], local: { a: "mine" }, pending, policy })).toEqual([
+            { kind: "conflict", id: "a", conflict: "organization-claim" },
+          ]);
+        }
+      }
+    });
+
+    it("always asks when an organization item replaces the item a secret was synced with", () => {
+      for (const policy of policies) {
+        for (const local of ["base", "edited"]) {
+          const remote = [R("a", "2", "theirs", "org-1", true)];
+          expect(plan({ remote, base: [["a", B("a", "1", "base", "mine-1")]], local: { a: local }, policy })).toEqual([
+            { kind: "conflict", id: "a", conflict: "organization-claim" },
+          ]);
+        }
+      }
+    });
+
+    it("keeps a local value as a new personal item, never pushing it to the organization", () => {
+      const actions = planSync({
+        remote: new Map([["a", R("a", "1", "theirs", "org-1", true)]]),
+        base: new Map(),
+        local: () => ({ fingerprint: "mine" }),
+        pendingCreates: new Set(["a"]),
+        policy: "prefer-local",
+        overrides: new Map([["a", { policy: "prefer-local", kind: "organization-claim" }]]),
+      });
+      expect(actions).toEqual([{ kind: "create", id: "a" }]);
+    });
+
+    it("still pulls onto an empty device and pushes to the organization item it synced with", () => {
+      expect(plan({ remote: [R("a", "1", "theirs", "org-1", true)] })).toEqual([{ kind: "pull", id: "a" }]);
+      const base: [string, BaseEntry][] = [["a", B("a", "1", "x", "org-1")]];
+      expect(plan({ remote: [R("a", "1", "x", "org-1", true)], base, local: { a: "y" } })).toEqual([{ kind: "push", id: "a" }]);
+    });
   });
 });

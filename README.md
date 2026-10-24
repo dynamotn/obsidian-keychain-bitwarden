@@ -109,6 +109,10 @@ organizations that carry an `obsidian:id` field:
 - Items you may only view are pulled, never pushed. Items whose password
   the organization hides from you are skipped.
 - A personal item always wins over an organization item with the same id.
+- An organization item that claims the id of a secret you already have
+  (queued for upload, set locally, or synced from another item) is never
+  written to and never replaces your value silently: you are always asked,
+  whatever the conflict policy. Keeping yours uploads it as a personal item.
 - New uploads are always personal items.
 
 It is off by default: see [Security](#security) for why.
@@ -155,8 +159,10 @@ running is never overwritten.
 - **Organization items are opt-in for a reason.** Their key reaches you
   encrypted to your public key, which the server knows. So a compromised
   server, like anyone in the organization, can create marked organization
-  items. A personal item can never be replaced that way, but an
-  organization-only secret can.
+  items. Without the folder that used to stand in the way, any member who
+  can add items to a collection you see can do this. A personal item can
+  never be replaced that way, and your own values are never sent to such an
+  item without asking, but an organization-only secret can be set by them.
 - **Live updates carry no secrets.** A notification only triggers a regular
   sync, which fetches and verifies everything. A misbehaving server can at
   most cause extra syncs, which are coalesced and spaced out.

@@ -16,6 +16,8 @@ export interface RemoteEntry {
   cipherId: string;
   revisionDate: string;
   fingerprint: string;
+  /** The item belongs to an organization, whose members (and a hostile server) can create items. */
+  organization?: boolean;
 }
 
 export interface LocalEntry {
@@ -23,7 +25,7 @@ export interface LocalEntry {
   fingerprint: string | null;
 }
 
-export type ConflictKind = "both-changed" | "local-unsynced" | "deleted-remotely";
+export type ConflictKind = "both-changed" | "local-unsynced" | "deleted-remotely" | "organization-claim";
 
 export type Action =
   | { kind: "pull"; id: string }
@@ -61,14 +63,20 @@ export function planSync(input: PlanInput): Action[] {
   const resolve = (id: string, conflict: ConflictKind): Action => {
     const override = input.overrides?.get(id);
     // A local value that was never synced may belong to someone else (another
-    // plugin, a stale device); only an explicit decision may overwrite either side.
-    const fallback = conflict === "local-unsynced" ? "ask" : input.policy;
+    // plugin, a stale device), and an organization item new to this id may
+    // have been planted by anyone in it: only an explicit decision may
+    // overwrite either side.
+    const fallback = conflict === "local-unsynced" || conflict === "organization-claim" ? "ask" : input.policy;
     const policy = override && override.kind === conflict ? override.policy : fallback;
     if (policy === "prefer-remote") {
       return conflict === "deleted-remotely" ? { kind: "clear-local", id } : { kind: "pull", id };
     }
     if (policy === "prefer-local") {
-      return conflict === "deleted-remotely" ? { kind: "create", id } : { kind: "push", id };
+      // Keeping the local value next to a claiming organization item uploads
+      // it as a new personal item, which then wins; it is never sent to the organization.
+      return conflict === "deleted-remotely" || conflict === "organization-claim"
+        ? { kind: "create", id }
+        : { kind: "push", id };
     }
     return { kind: "conflict", id, conflict };
   };
@@ -77,6 +85,13 @@ export function planSync(input: PlanInput): Action[] {
     const r = remote.get(id);
     const b = base.get(id);
     const l = local(id);
+    // An organization item other than the one this id was synced with.
+    const claimed = r?.organization === true && r.cipherId !== b?.cipherId;
+
+    if (r && claimed && l.fingerprint !== null && l.fingerprint !== r.fingerprint) {
+      actions.push(resolve(id, "organization-claim"));
+      continue;
+    }
 
     if (r && !b) {
       if (l.fingerprint === null || l.fingerprint === r.fingerprint) actions.push({ kind: l.fingerprint ? "adopt" : "pull", id });

@@ -218,6 +218,7 @@ async function runPass(
       cipherId: rec.cipherId,
       revisionDate: rec.revisionDate,
       fingerprint: await fp.of(rec.id, rec.value),
+      organization: rec.organizationId !== null,
     });
   }
 
@@ -315,6 +316,11 @@ async function apply(action: Action, ctx: SyncContext, pass: PassData, report: S
     }
     case "push": {
       if (!rec || local === null || localFingerprint === null) return false;
+      // Only an organization item this secret was already synced with is ever
+      // written to; anything else would hand a personal value to its members.
+      if (rec.organizationId && state.base[id]?.cipherId !== rec.cipherId) {
+        throw new Error("refusing to upload to an organization item this secret was not synced with");
+      }
       if (rec.readOnly) {
         report.skipped.push({
           cipherId: rec.cipherId,

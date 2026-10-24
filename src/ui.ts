@@ -65,6 +65,16 @@ const CONFLICT_TEXT: Record<ConflictInfo["kind"], string> = {
   "both-changed": "changed both here and in Bitwarden",
   "local-unsynced": "exists here with a different value than in Bitwarden",
   "deleted-remotely": "was deleted in Bitwarden but edited here",
+  "organization-claim":
+    "is claimed by an organization item this device has not synced before; anyone in that organization can see " +
+    "its value. Keeping yours uploads it as a personal item instead",
+};
+
+const CHOICE_TEXT: Record<ConflictInfo["kind"], [remote: string, local: string]> = {
+  "both-changed": ["Use Bitwarden", "Use this device"],
+  "local-unsynced": ["Use Bitwarden", "Use this device"],
+  "deleted-remotely": ["Clear on this device", "Upload again"],
+  "organization-claim": ["Use the organization's", "Keep mine, as a personal item"],
 };
 
 export class ConflictModal extends Modal {
@@ -89,8 +99,8 @@ export class ConflictModal extends Modal {
         .addDropdown((d) =>
           d
             .addOption("", "Decide later")
-            .addOption("prefer-remote", c.kind === "deleted-remotely" ? "Clear on this device" : "Use Bitwarden")
-            .addOption("prefer-local", c.kind === "deleted-remotely" ? "Upload again" : "Use this device")
+            .addOption("prefer-remote", CHOICE_TEXT[c.kind][0])
+            .addOption("prefer-local", CHOICE_TEXT[c.kind][1])
             .onChange((v) => {
               // Tied to the kind shown here: if the conflict changes before the
               // sync runs, the choice no longer applies and the user is asked again.

@@ -109,6 +109,45 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(r.pulled).toEqual([]);
     });
 
+    it("never upload a pending secret into an organization item claiming its id", async () => {
+      const d = makeDevice(server.http, server.account, { settings: { syncOrganizations: true, conflictPolicy: "prefer-local" } });
+      await d.controller.unlock(server.account.password);
+      d.store.set("my-token", "private");
+      d.controller.queueUpload("my-token", { kind: "global" });
+      const planted = await server.addItem({ name: "my-token", value: "planted", organization: org });
+      const r = await d.controller.sync();
+      expect(r.conflicts.map((c) => c.kind)).toEqual(["organization-claim"]);
+      expect(r.pushed).toEqual([]);
+      expect(await remoteValue(planted.id)).toBe("planted");
+      expect(d.store.get("my-token")).toBe("private");
+
+      // Keeping it makes a personal item, which then wins over the organization's.
+      const kept = await d.controller.sync(new Map([["my-token", { policy: "prefer-local", kind: "organization-claim" }]]));
+      expect(kept.created).toEqual(["my-token"]);
+      expect(await remoteValue(planted.id)).toBe("planted");
+      const mine = server.ciphers.find((c) => !c.organizationId)!;
+      expect(await remoteValue(mine.id)).toBe("private");
+      const again = await d.controller.sync();
+      expect([...again.pushed, ...again.pulled, ...again.conflicts]).toEqual([]);
+    });
+
+    it("never let an organization item silently take over a secret whose personal item was deleted", async () => {
+      const d = makeDevice(server.http, server.account, { settings: { syncOrganizations: true, conflictPolicy: "prefer-local" } });
+      await d.controller.unlock(server.account.password);
+      const personal = await server.addItem({ name: "api-key", value: "mine" });
+      await server.addItem({ name: "pad", value: "p" });
+      await d.controller.sync();
+      personal.deletedDate = server.nextRevision();
+      const planted = await server.addItem({ name: "api-key", value: "planted", organization: org });
+      for (const local of ["mine", "edited"]) {
+        d.store.set("api-key", local);
+        const r = await d.controller.sync();
+        expect(r.conflicts.map((c) => c.kind)).toEqual(["organization-claim"]);
+        expect(d.store.get("api-key")).toBe(local);
+        expect(await remoteValue(planted.id)).toBe("planted");
+      }
+    });
+
     it("report an organization key that cannot be read, and personal items still sync", async () => {
       const broken = await server.addOrganization({ key: "4.AAAA" });
       await server.addItem({ name: "personal", value: "p" });

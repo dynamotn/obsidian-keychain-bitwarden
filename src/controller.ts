@@ -94,10 +94,18 @@ export class SecretsController {
     return new URL(resolveServerUrls(this.deps.settings().serverUrl).identity).origin;
   }
 
-  /** Saves part of the API key and binds it to the currently configured server. */
+  /**
+   * Saves part of the API key and binds it to the currently configured server.
+   * Rebinding to another server clears the other part, so a secret entered for
+   * one server is never sent to another one after only the id was re-entered.
+   */
   setApiKey(part: "clientId" | "clientSecret", value: string): void {
+    const origin = this.identityOrigin();
+    if (this.deps.store.get(SECRET_API_ORIGIN) !== origin) {
+      this.deps.store.set(part === "clientId" ? SECRET_CLIENT_SECRET : SECRET_CLIENT_ID, "");
+    }
     this.deps.store.set(part === "clientId" ? SECRET_CLIENT_ID : SECRET_CLIENT_SECRET, value.trim());
-    this.deps.store.set(SECRET_API_ORIGIN, this.identityOrigin());
+    this.deps.store.set(SECRET_API_ORIGIN, origin);
   }
 
   private credentials(): ApiCredentials {
