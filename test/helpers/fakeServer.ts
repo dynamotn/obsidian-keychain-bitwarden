@@ -131,6 +131,8 @@ export class FakeBitwardenServer {
     id?: string | null;
     /** Puts the value in an obsidian:password field, and this in the default place instead. */
     defaultValue?: string;
+    /** Extra custom fields, as plain name and value. */
+    extraFields?: [name: string, value: string][];
     scope?: string;
     itemKey?: boolean;
     /** Makes it an item of this organization, encrypted with the organization's key. */
@@ -156,6 +158,9 @@ export class FakeBitwardenServer {
       fields.push({ type: 0, name: await encryptString("obsidian:scope", key), value: await encryptString(opts.scope, key) });
     }
     fields.push({ type: 1, name: await encryptString("unrelated", key), value: await encryptString("keep me", key) });
+    for (const [name, value] of opts.extraFields ?? []) {
+      fields.push({ type: 0, name: await encryptString(name, key), value: await encryptString(value, key) });
+    }
     if (opts.defaultValue !== undefined) {
       fields.push({ type: 1, name: await encryptString("obsidian:password", key), value: await encryptString(opts.value, key) });
     }

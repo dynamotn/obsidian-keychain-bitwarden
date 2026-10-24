@@ -19,6 +19,12 @@ export const FIELD_ID = "obsidian:id";
 export const FIELD_SCOPE = "obsidian:scope";
 /** Holds the secret instead of the login password or the note's text, when present. */
 export const FIELD_PASSWORD = "obsidian:password";
+/**
+ * Fields of the dybw data model this plugin does not implement: secret
+ * storage holds text only (no `encoding`), and values never move into the
+ * notes (no `location`). Items setting them are skipped, never misread.
+ */
+const UNSUPPORTED_FIELDS = ["obsidian:encoding", "obsidian:location"];
 
 /** Same rule as SecretStorage.setSecret: lowercase alphanumerics with optional dashes. */
 export const SECRET_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -212,6 +218,11 @@ export async function readVault(
       const scope = parseScope(scopeField ? await decryptField(scopeField.value, key) : null);
       if (!scope) {
         skipped.push({ cipherId: cipher.id, reason: `unknown "${FIELD_SCOPE}" value` });
+        continue;
+      }
+      const unsupported = UNSUPPORTED_FIELDS.find((name) => fields.has(name));
+      if (unsupported) {
+        skipped.push({ cipherId: cipher.id, reason: `"${unsupported}" is not supported by this plugin` });
         continue;
       }
       const valueField = fields.get(FIELD_PASSWORD) ?? null;

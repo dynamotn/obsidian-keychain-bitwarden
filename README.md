@@ -89,6 +89,9 @@ in any folder or none, becomes a secret once it has a custom field named
 | Custom field `obsidian:password` if the item has one, else the login password or the secure note's text | Secret value |
 | Optional custom field `obsidian:scope` | Where the secret appears: `global` (default, everywhere), `vault:<name>` (one vault), `device:<id>` (one device; the id is shown in the settings) |
 
+Items using `obsidian:encoding` or `obsidian:location` are skipped and
+reported: secret storage holds text only.
+
 `obsidian:password` lets a secret live next to an unrelated password, for
 example an API token on the login of the site that issued it. Edits made in
 Obsidian go back to where the value was read from, and the login password

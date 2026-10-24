@@ -249,6 +249,21 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(b.store.get("db")).toBe("rotated");
     });
 
+    it("skips items using encoding or location, which secret storage cannot honour", async () => {
+      const binary = await server.addItem({ name: "cert", value: "AAEC", extraFields: [["obsidian:encoding", "base64"]] });
+      const moved = await server.addItem({ name: "big", value: "v", extraFields: [["obsidian:location", "notes"]] });
+      // A base64 value claimed on the user's own login password (dybw ADR 0005) is never decoded.
+      const login = await server.addItem({ name: "pw", value: "hunter2", type: 1, extraFields: [["obsidian:encoding", "base64"]] });
+      await server.addItem({ name: "plain", value: "p" });
+      const r = await a.controller.sync();
+      expect(r.pulled).toEqual(["plain"]);
+      for (const [c, field] of [[binary, "encoding"], [moved, "location"], [login, "encoding"]] as const) {
+        expect(r.skipped).toContainEqual({ cipherId: c.id, reason: `"obsidian:${field}" is not supported by this plugin` });
+      }
+      expect(a.store.get("cert")).toBeNull();
+      expect(a.store.get("pw")).toBeNull();
+    });
+
     it("files uploads in the configured folder, or in none", async () => {
       a.store.set("first", "1");
       a.controller.queueUpload("first", { kind: "global" });

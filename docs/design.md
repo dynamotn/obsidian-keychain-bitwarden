@@ -4,7 +4,7 @@ This document records how the plugin works, why it is built the
 way it is, and how it was verified. The user-facing summary is in
 [`README.md`](../README.md).
 
-- Follows the **dybw data model, version 1** (namespace `obsidian`), shared
+- Follows the **dybw data model, version 1.1** (namespace `obsidian`), shared
   with bwss and the other dybw tools in the `dybw` umbrella repository
   (`docs/data-model.md`).
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
@@ -12,7 +12,7 @@ way it is, and how it was verified. The user-facing summary is in
 - Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
   (XChaCha20-Poly1305). Everything else is WebCrypto, Web Workers, WebSocket
   and the Obsidian API.
-- Bundle: one 124.2 KiB `main.js` (production build), with the Argon2
+- Bundle: one 124.4 KiB `main.js` (production build), with the Argon2
   worker embedded in it. Its only import is `obsidian`.
 
 ## Contents
@@ -177,6 +177,12 @@ Rules:
   the id to it, and later local edits would then go to its members. "Keep mine" creates a personal item
   (which then wins); a push only ever goes to the organization item that
   the base entry already names, and the engine refuses anything else.
+- **Unsupported fields**: secret storage holds text only, and the plugin
+  never moves a value into the notes, so it does not implement the data
+  model's `obsidian:encoding` and `obsidian:location`. An item that sets
+  either is skipped and reported, never misread; a secret already synced
+  from it is held. This also covers base64 claimed on a login's own
+  password, which the data model forbids (dybw ADR 0005).
 - **Excluded items**: unmarked items, trashed items (`deletedDate`), other
   item types (cards, identities, SSH keys; reported when marked), and
   organization items unless enabled (not decrypted, so not reported).
@@ -566,8 +572,8 @@ Static analysis:
 |---|---|---|
 | Typecheck | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **335 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **674 passed** (337 × 2) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **338 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **680 passed** (340 × 2) |
 | Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
 | Real server + independent clients | `npm run test:integration` | **12 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
