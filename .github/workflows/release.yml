@@ -2,6 +2,10 @@
 # in manifest.json, package.json, versions.json and CLIENT_VERSION in
 # src/bw/api.ts, then push a tag equal to it (no "v" prefix), e.g.
 # `git tag 0.2.0`.
+#
+# The build runs with a read-only token and no dependency lifecycle scripts;
+# only the publish job, which runs no project code, may write to the repository.
+# Actions are pinned by commit; the comment names the tag the commit had.
 name: Release
 
 on:
@@ -9,19 +13,24 @@ on:
     tags:
       - "[0-9]+.[0-9]+.[0-9]+*"
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # No dependency cache: a release is built from the lockfile alone. setup-node
+      # v4.4.0 (the commit below) caches only when `cache` is set; caching by
+      # default, which zizmor assumes, came in v5.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # zizmor: ignore[cache-poisoning]
         with:
           node-version: 26
-          cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       - name: Check that the tag matches the plugin version
         run: |
@@ -47,11 +56,32 @@ jobs:
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:browser
 
+      - run: sha256sum main.js manifest.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: |
+            main.js
+            manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+      - run: sha256sum main.js manifest.json
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" main.js manifest.json \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             --verify-tag

@@ -250,7 +250,9 @@ To release, set the new version in `manifest.json`, `package.json`,
 `versions.json` (mapped to `minAppVersion`) and `CLIENT_VERSION` in
 `src/bw/api.ts`, commit, and push a tag equal to it without a `v`, e.g.
 `git tag 0.2.0`. The release workflow checks that they all agree, runs the
-tests, and publishes `main.js` and `manifest.json`.
+tests, and publishes `main.js` and `manifest.json`. It builds with a
+read-only token, without dependency install scripts or a cache, and only a
+separate publish job that runs no project code may write the release.
 
 Architecture, the sync algorithm, test results and performance figures are
 in [`docs/design.md`](docs/design.md).
