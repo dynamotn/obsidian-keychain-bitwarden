@@ -61,17 +61,33 @@ export class UnlockModal extends Modal {
   }
 }
 
-const CONFLICT_TEXT: Record<ConflictInfo["kind"], (organization: string) => string> = {
-  "both-changed": () => "changed both here and in Bitwarden",
-  "local-unsynced": () => "exists here with a different value than in Bitwarden",
-  "deleted-remotely": () => "was deleted in Bitwarden but edited here",
-  "organization-claim": (org) =>
-    `is claimed by an item of the organization "${org}" that this device has not synced before; anyone in that ` +
-    "organization can see its value. Keeping yours uploads it as a personal item instead",
-  "organization-push": (org) =>
-    `changed here, and its item belongs to the organization "${org}": anyone in it would see your value. ` +
+const CONFLICT_TEXT: Record<ConflictInfo["kind"], string> = {
+  "both-changed": "changed both here and in Bitwarden",
+  "local-unsynced": "exists here with a different value than in Bitwarden",
+  "deleted-remotely": "was deleted in Bitwarden but edited here",
+  "organization-claim":
+    "is claimed by an organization item this device has not synced before; anyone in that organization can see " +
+    "its value. Keeping yours uploads it as a personal item instead",
+  "organization-push":
+    "changed here, and its item belongs to an organization: anyone in it would see your value. " +
     "Nothing is sent to an organization item until you agree once",
 };
+
+/**
+ * The organization's name is chosen by its owners, so it is shown apart from
+ * the warning, on a line of its own, never inside a sentence it could reword.
+ */
+function conflictDescription(c: ConflictInfo): string | DocumentFragment {
+  const text = CONFLICT_TEXT[c.kind];
+  if (!c.organization) return text;
+  const organization = c.organization;
+  return createFragment((f) => {
+    f.appendText(text);
+    f.createEl("br");
+    f.appendText("Organization: ");
+    f.createEl("strong", { text: organization });
+  });
+}
 
 const CHOICE_TEXT: Record<ConflictInfo["kind"], [remote: string, local: string]> = {
   "both-changed": ["Use Bitwarden", "Use this device"],
@@ -99,7 +115,7 @@ export class ConflictModal extends Modal {
     for (const c of this.conflicts) {
       new Setting(contentEl)
         .setName(c.label === c.id ? c.id : `${c.label} (${c.id})`)
-        .setDesc(CONFLICT_TEXT[c.kind](c.organization ?? "unknown"))
+        .setDesc(conflictDescription(c))
         .addDropdown((d) =>
           d
             .addOption("", "Decide later")

@@ -222,6 +222,30 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(r.errors).toEqual([expect.stringMatching(new RegExp(`organization ${broken}`))]);
     });
 
+    it.each([
+      ["control characters and line breaks", "Acme\u0000\u001b[2J\r\nTeam\u0085", "Acme [2J Team"],
+      ["characters that reorder text", "Acme\u202e\u2066Team\u2069\u200f", "AcmeTeam"],
+      ["runs of spaces", " Acme \t  Team ", "Acme Team"],
+      ["more than 64 characters", "A".repeat(100), `${"A".repeat(63)}…`],
+    ])("are named without %s, as their owners chose the name", async (_kind, name, shown) => {
+      server.organizations[0]!.name = name;
+      await server.addItem({ name: "team-token", value: "theirs", organization: org });
+      await a.controller.sync();
+      a.store.set("team-token", "mine");
+      expect((await a.controller.sync()).conflicts.map((c) => c.organization)).toEqual([shown]);
+    });
+
+    it.each([
+      ["nothing but control characters", "\u0000\u202e\n"],
+      ["missing", undefined],
+    ])("are named by the organization's id when its name is %s", async (_kind, name) => {
+      server.organizations[0]!.name = name;
+      await server.addItem({ name: "team-token", value: "theirs", organization: org });
+      await a.controller.sync();
+      a.store.set("team-token", "mine");
+      expect((await a.controller.sync()).conflicts.map((c) => c.organization)).toEqual([org]);
+    });
+
     it("are never where new uploads go", async () => {
       a.store.set("local-only", "x");
       a.controller.queueUpload("local-only", { kind: "global" });

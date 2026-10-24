@@ -184,7 +184,10 @@ Rules:
 - **First push to an organization item**: a binding made by a pull,
   whether the id was new to the device or the user confirmed a claim, is
   pull-only. The first push to the item is the conflict `organization-push`,
-  always asked whatever the policy, naming the organization. "Send mine"
+  always asked whatever the policy, naming the organization. The name is
+  chosen by the organization's owners, so the dialog shows it on a line of
+  its own, with control and text-reordering characters removed and at most
+  64 characters, never inside the warning's sentence. "Send mine"
   pushes and stores `pushConfirmed` in the base entry, which later pushes
   and pulls of the same cipher keep; any other cipher starts without it.
   The engine refuses a push to an organization item that has neither the

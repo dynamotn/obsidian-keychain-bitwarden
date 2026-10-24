@@ -288,9 +288,24 @@ interface PassData {
 const readOnlyReason = (id: string) =>
   `"${id}" changed on this device, but its organization does not let you edit it; not uploaded`;
 
+const ORGANIZATION_NAME_MAX = 64;
+
+/**
+ * The organization's name for the conflict dialog. Its owners chose it, and
+ * they are who the dialog warns about: control characters and line breaks
+ * become spaces, invisible and text-reordering characters go, and a long
+ * name is cut, so it cannot pass for part of the warning.
+ */
 function organizationName(sync: SyncDto, organizationId: string): string {
-  const name = sync.profile.organizations?.find((o) => o.id === organizationId)?.name?.trim();
-  return name || organizationId;
+  const raw = sync.profile.organizations?.find((o) => o.id === organizationId)?.name ?? "";
+  const name = raw
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!name) return organizationId;
+  const chars = [...name];
+  return chars.length > ORGANIZATION_NAME_MAX ? `${chars.slice(0, ORGANIZATION_NAME_MAX - 1).join("")}…` : name;
 }
 
 /** True when the local value changed since this pass read it. */
