@@ -268,12 +268,30 @@ describe("notifications hub client", () => {
     expect(sockets).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(sockets).toHaveLength(3);
-    // A successful handshake resets the delays.
+    // A connection that stayed up resets the delays.
     sockets[2]!.open();
     sockets[2]!.receive(new Uint8Array([0x7b, 0x7d, 0x1e]));
+    await vi.advanceTimersByTimeAsync(30_000);
     sockets[2]!.drop();
     await vi.advanceTimersByTimeAsync(2_000);
     expect(sockets).toHaveLength(4);
+  });
+
+  it("keeps backing off from a server that accepts the handshake, then closes at once", async () => {
+    hub.start();
+    const delays: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const s = await connected();
+      s.drop();
+      const before = sockets.length;
+      let waited = 0;
+      while (sockets.length === before) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        waited += 1_000;
+      }
+      delays.push(waited);
+    }
+    expect(delays).toEqual([2_000, 5_000, 15_000, 60_000]);
   });
 
   it("reconnects when the server goes silent", async () => {

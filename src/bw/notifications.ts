@@ -69,6 +69,8 @@ export interface HubOptions {
   minIntervalMs?: number;
   /** Delays before reconnect attempts; the last one repeats. */
   backoffMs?: number[];
+  /** The delays start over only once a connection stayed up this long. */
+  stableMs?: number;
 }
 
 /** Hub URL of a Bitwarden server, from its notifications base URL. */
@@ -85,6 +87,7 @@ export class NotificationHub {
   private reconnectTimer: number | null = null;
   private pingTimer: number | null = null;
   private idleTimer: number | null = null;
+  private stableTimer: number | null = null;
   private settleTimer: number | null = null;
   private lastChange = -Infinity;
   /** Bumped on every (re)connect, so callbacks of an old socket do nothing. */
@@ -100,6 +103,7 @@ export class NotificationHub {
       settleMs: 1_000,
       minIntervalMs: 5_000,
       backoffMs: [2_000, 5_000, 15_000, 60_000, 300_000],
+      stableMs: 30_000,
       ...options,
     };
   }
@@ -181,7 +185,11 @@ export class NotificationHub {
       const response = JSON.parse(text.slice(0, end)) as { error?: unknown };
       if (response.error) throw new Error("Handshake refused");
       this.handshakeDone = true;
-      this.attempt = 0;
+      // Not yet: a server that accepts the handshake and then closes would get a reconnect every 2 s.
+      this.stableTimer = this.timers.set(() => {
+        this.stableTimer = null;
+        this.attempt = 0;
+      }, this.o.stableMs);
       this.o.onConnected?.(true);
       this.schedulePing();
       const rest = toBytes(data).subarray(new TextEncoder().encode(text.slice(0, end + 1)).length);
@@ -253,8 +261,8 @@ export class NotificationHub {
     this.epoch++;
     const wasConnected = this.handshakeDone;
     this.handshakeDone = false;
-    for (const t of [this.pingTimer, this.idleTimer]) if (t !== null) this.timers.clear(t);
-    this.pingTimer = this.idleTimer = null;
+    for (const t of [this.pingTimer, this.idleTimer, this.stableTimer]) if (t !== null) this.timers.clear(t);
+    this.pingTimer = this.idleTimer = this.stableTimer = null;
     const socket = this.socket;
     this.socket = null;
     if (socket) {

@@ -457,8 +457,10 @@ WebSocket to the server's notifications hub, as the official clients do:
   identifier is ignored: it reports a change this device made.
 - **Coalescing**: notifications only trigger a regular sync. A burst is
   reported once, after 1 second of quiet, and at most every 5 seconds.
-- **Reconnects** back off from 2 seconds to 5 minutes, reset after each
-  successful handshake. Callbacks of a replaced socket are ignored.
+- **Reconnects** back off from 2 seconds to 5 minutes, reset once a
+  connection has stayed up for 30 seconds after its handshake, so a server
+  that accepts the handshake and closes at once keeps backing off.
+  Callbacks of a replaced socket are ignored.
 - **Untrusted input**: the MessagePack decoder bounds-checks every read,
   limits nesting to 32 levels and messages to 1 MiB, rejects invalid UTF-8,
   and builds maps without a prototype. Malformed data closes the connection
