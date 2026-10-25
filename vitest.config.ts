@@ -3,7 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
-    exclude: ["test/integration/**"],
+    // The conformance vectors are opt-in: `npm run test:vectors`.
+    exclude: ["test/integration/**", "test/vectors/**"],
     testTimeout: 30_000,
     // `npm run test:coverage` (CI and releases) fails below 100% for the code
     // that runs without Obsidian. Left out: main.ts and ui.ts, the glue that

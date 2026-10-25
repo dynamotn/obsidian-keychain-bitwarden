@@ -14,7 +14,8 @@
     "test:integration": "vitest run -c vitest.integration.config.ts",
     "perf": "vitest run -c vitest.perf.config.ts",
     "perf:browser": "PERF_BROWSER=1 vitest run -c vitest.perf.config.ts",
-    "test:sdk": "BW_SDK_VERIFY=1 vitest run test/sdk"
+    "test:sdk": "BW_SDK_VERIFY=1 vitest run test/sdk",
+    "test:vectors": "vitest run -c vitest.vectors.config.ts"
   },
   "license": "MIT",
   "type": "module",

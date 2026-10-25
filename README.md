@@ -221,6 +221,9 @@ npm run test:coverage      # the same, failing below 100% coverage of the code t
 npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (≈ Android)
 npm run perf               # performance budgets (add :browser for WebKit/Chromium)
 
+# The dybw conformance vectors (dybw-core), opt-in; known divergences in test/vectors/expected-failures.txt:
+DYBW_VECTORS_DIR=<dybw-core>/vectors npm run test:vectors
+
 # Against a real server, cross-checked with rbw and the official Bitwarden CLI:
 docker run -d --rm --name keychain-bw-it -p 127.0.0.1:18080:80 \
   -e SIGNUPS_ALLOWED=true -e SIGNUPS_VERIFY=false \
