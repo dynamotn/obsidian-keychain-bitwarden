@@ -6,7 +6,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
-    exclude: ["test/integration/**", "test/sdk/**"],
+    exclude: ["test/integration/**", "test/sdk/**", "test/vectors/**"],
     globalSetup: ["test/setup/argon2-worker.ts"],
     testTimeout: 60_000,
     browser: {
