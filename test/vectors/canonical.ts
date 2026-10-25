@@ -93,6 +93,7 @@ export async function canonicalize(sent: SentRequest, keys: ScenarioKeys): Promi
     return decryptString(v, key);
   };
 
+  // `fields`, `uris` and `passwordHistory` read null as [] because the canonical body types them as arrays.
   const rawLogin = body.login as Record<string, unknown> | null | undefined;
   let login: CanonicalLogin | null = null;
   if (rawLogin) {

@@ -373,11 +373,24 @@ async function writeScenario(dir: string, s: Scenario): Promise<WriteExpect & { 
 
   const errors = report.errors.filter((e) => e.startsWith(`${op.id}: `)).map((e) => e.slice(op.id.length + 2));
   const others = report.errors.filter((e) => !e.startsWith(`${op.id}: `));
+  // After a refetch (§6.5) the plugin reports a changed value source as a
+  // both-changed conflict, and gives up on an item that lost its marker
+  // through a deleted-remotely conflict (no request). Any other conflict, or
+  // any conflict without a refetch, is unexpected and fails the test.
+  const refetched = op.fresh !== undefined;
+  const sourceChanged = refetched && report.conflicts.some((c) => c.id === op.id && c.kind === "both-changed");
+  const unexpected = report.conflicts.filter(
+    (c) => !(refetched && c.id === op.id && (c.kind === "both-changed" || c.kind === "deleted-remotely")),
+  );
   const out: WriteExpect & { engineErrors?: string[] } =
     errors.length > 0
       ? { error: errorCode(errors[0]!) }
-      : { requests: await Promise.all(h.server.sent.map(async (r) => dropToolDefined(await canonicalize(r, h.keys), NS))) };
-  if (others.length || errors.length > 1) out.engineErrors = report.errors;
+      : sourceChanged && h.server.sent.length === 0
+        ? { error: "value-source-changed" }
+        : { requests: await Promise.all(h.server.sent.map(async (r) => dropToolDefined(await canonicalize(r, h.keys), NS))) };
+  if (others.length || errors.length > 1 || unexpected.length) {
+    out.engineErrors = [...report.errors, ...report.conflicts.map((c) => `${c.id}: conflict ${c.kind}`)];
+  }
   return out;
 }
 
