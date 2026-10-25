@@ -46,26 +46,11 @@ export interface ScenarioKeys {
   orgKeys: ReadonlyMap<string, SymmetricKey>;
 }
 
-/** Request keys Bitwarden defines; anything else the plugin sends is an unknown property passed through. */
-const KNOWN_REQUEST_KEYS = new Set([
-  "type",
-  "folderId",
-  "organizationId",
-  "name",
-  "notes",
-  "fields",
-  "favorite",
-  "reprompt",
-  "key",
-  "login",
-  "secureNote",
-  "card",
-  "identity",
-  "sshKey",
-  "passwordHistory",
-  "lastKnownRevisionDate",
-  "encryptedFor",
-]);
+/**
+ * Unknown properties passed through: only the `x` convention keys, as in a
+ * cipher (vectors/README.md, canonical body). Any other key is ignored.
+ */
+const EXTRA_KEY = /^x[A-Za-z0-9]+$/;
 
 /** The date the tests freeze the clock at; a date equal to it was written by the tool. */
 export const NOW = "2099-09-09T09:09:09.999Z";
@@ -114,7 +99,7 @@ export async function canonicalize(sent: SentRequest, keys: ScenarioKeys): Promi
   }
 
   const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(body)) if (!KNOWN_REQUEST_KEYS.has(k)) extra[k] = v;
+  for (const [k, v] of Object.entries(body)) if (EXTRA_KEY.test(k)) extra[k] = v;
 
   return markNow({
     method: sent.method,

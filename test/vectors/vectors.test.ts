@@ -9,8 +9,10 @@
 //   for upload), so the plugin builds and sends the request itself; with
 //   `fresh`, the first update is rejected as out of date and the engine's own
 //   retry refetches and re-applies.
-// - sync/*: planSync on a PlanInput built from the read items, `device` and
-//   `local`, with the plugin's own value fingerprints.
+// - sync/*: runSync on a device holding `device` and `local`, so the engine's
+//   own pre-plan step (reserved ids, scope, duplicates, held items that are
+//   uninspectable) builds the planner's input; the plan planSync returns is
+//   recorded, and the run stops before any action is applied.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -21,8 +23,8 @@ import { encryptBytes, encryptString, SymmetricKey, ValueFingerprinter } from ".
 import { fromBase64, toBase64 } from "../../src/bw/encoding";
 import type { HttpClient } from "../../src/bw/http";
 import { formatScope, readVault, unlockOrganizationKeys, type SecretRecord } from "../../src/bw/vault";
-import { runSync, type SecretStore, type SyncReport } from "../../src/sync/engine";
-import { planSync, type BaseEntry, type ConflictPolicy, type LocalEntry, type RemoteEntry } from "../../src/sync/plan";
+import { runSync, SyncAbortedError, type SecretStore, type SyncReport } from "../../src/sync/engine";
+import type { Action, ConflictPolicy } from "../../src/sync/plan";
 import { newDeviceState, type DeviceState } from "../../src/sync/state";
 import {
   canonicalize,
@@ -35,6 +37,21 @@ import {
   type ScenarioKeys,
   type SentRequest,
 } from "./canonical";
+
+// The planner stays the real one; this only records what it returned, so a
+// sync scenario sees the plan the engine itself built and acted on.
+const planned = vi.hoisted(() => ({ actions: null as Action[] | null }));
+vi.mock("../../src/sync/plan", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/sync/plan")>();
+  return {
+    ...real,
+    planSync: (input: Parameters<typeof real.planSync>[0]) => {
+      const actions = real.planSync(input);
+      planned.actions = actions;
+      return actions;
+    },
+  };
+});
 
 const NS = "obsidian";
 const NOT_FOUND = "conformance vectors not found: set DYBW_VECTORS_DIR";
@@ -402,39 +419,33 @@ function normalizeWriteExpect(e: WriteExpect): WriteExpect {
 
 async function planScenario(dir: string, s: Scenario): Promise<PlanExpect> {
   const h = await harness(dir, s);
-  const { kept } = await readScenario(h);
   const fp = await ValueFingerprinter.forUserKey(h.keys.userKey);
-
-  const remote = new Map<string, RemoteEntry>();
-  for (const r of kept) {
-    remote.set(r.id, {
-      id: r.id,
-      cipherId: r.cipherId,
-      revisionDate: r.revisionDate,
-      fingerprint: await fp.of(r.id, r.value),
-      organization: r.organizationId !== null,
-    });
-  }
-  const base = new Map<string, BaseEntry>();
+  const state = newDeviceState();
   for (const [id, e] of Object.entries(s.device?.base ?? {})) {
-    base.set(id, {
+    state.base[id] = {
       cipherId: e.cipher,
       revisionDate: e.revisionDate,
       fingerprint: await fp.of(id, e.value),
       ...(e.pushConfirmed ? { pushConfirmed: true } : {}),
-    });
+    };
   }
+  state.pendingCreates = [...(s.device?.pendingCreates ?? [])];
   // An absent id and null both mean no local value; "" is a value.
-  const local = new Map<string, LocalEntry>();
-  for (const [id, v] of Object.entries(s.local ?? {})) local.set(id, { fingerprint: v === null ? null : await fp.of(id, v) });
+  const store = new MapStore();
+  for (const [id, v] of Object.entries(s.local ?? {})) if (v !== null) store.set(id, v);
 
-  const actions = planSync({
-    remote,
-    base,
-    local: (id) => local.get(id) ?? { fingerprint: null },
-    pendingCreates: new Set(s.device?.pendingCreates ?? []),
-    policy: s.options?.policy ?? "ask",
-  });
+  // The engine checks for cancellation before each action: cancelling once the
+  // plan exists stops the run before anything is applied.
+  planned.actions = null;
+  const ctx = { ...syncContext(h, store, state, { policy: s.options?.policy ?? "ask" }), isCancelled: () => planned.actions !== null };
+  try {
+    await runSync(ctx);
+  } catch (e) {
+    // Thrown after planning: the cancellation above, or the engine's mass-clear guard.
+    if (!(e instanceof SyncAbortedError)) throw e;
+  }
+  const actions = planned.actions as Action[] | null;
+  if (actions === null) throw new Error("the engine never reached the planner");
   // The `confirmed` marker is not part of the plan (vectors/README.md).
   return actions.map((a) => (a.kind === "conflict" ? { kind: a.kind, id: a.id, conflict: a.conflict } : { kind: a.kind, id: a.id }));
 }

@@ -221,7 +221,8 @@ npm run test:coverage      # the same, failing below 100% coverage of the code t
 npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (≈ Android)
 npm run perf               # performance budgets (add :browser for WebKit/Chromium)
 
-# The dybw conformance vectors (dybw-core), opt-in; known divergences in test/vectors/expected-failures.txt:
+# The dybw conformance vectors (dybw-core), opt-in; test/vectors/expected-failures.txt lists the vectors
+# that fail today (`bug:` lines are known plugin defects awaiting a fix):
 DYBW_VECTORS_DIR=<dybw-core>/vectors npm run test:vectors
 
 # Against a real server, cross-checked with rbw and the official Bitwarden CLI:
