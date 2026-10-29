@@ -205,6 +205,11 @@ export async function readVault(
   const present = new Set<string>();
   for (const cipher of sync.ciphers) {
     if (cipher.deletedDate) continue;
+    // Blob-encrypted items keep name and fields inside `data`, which cannot be read yet: hold, never a record.
+    if (isBlobCipher(cipher)) {
+      present.add(cipher.id);
+      continue;
+    }
     const ownerKey = cipher.organizationId && !orgKeys ? undefined : ownerKeyFor(cipher, userKey, orgKeys);
     if (!ownerKey) {
       present.add(cipher.id);
@@ -290,6 +295,17 @@ export async function readVault(
     }
   }
   return { records, skipped, present };
+}
+
+/** The SDK's test: `data` parses as a JSON object with a `format_version` key. */
+function isBlobCipher(cipher: CipherDto): boolean {
+  if (!cipher.data) return false;
+  try {
+    const d: unknown = JSON.parse(cipher.data);
+    return typeof d === "object" && d !== null && !Array.isArray(d) && "format_version" in d;
+  } catch {
+    return false;
+  }
 }
 
 interface ToolField {

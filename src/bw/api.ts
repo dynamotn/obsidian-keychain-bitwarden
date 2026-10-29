@@ -88,6 +88,8 @@ export interface CipherDto {
   edit?: boolean;
   /** Organization items only: false when the organization hides the password from this user. */
   viewPassword?: boolean;
+  /** A JSON string; `{"format_version":..}` marks Bitwarden's blob-encrypted items, whose other fields are empty. */
+  data?: string | null;
 }
 
 export interface PasswordHistoryDto {

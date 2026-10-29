@@ -3,6 +3,7 @@ import { decryptString, KdfType, unwrapKey } from "../src/bw/crypto";
 import { SECRET_USER_KEY } from "../src/controller";
 import { ACCOUNT_KINDS, FakeBitwardenServer } from "./helpers/fakeServer";
 import { makeDevice, type TestDevice } from "./helpers/device";
+import type { CipherDto } from "../src/bw/api";
 import { fromBase64, toBase64 } from "../src/bw/encoding";
 
 /** Flips one ciphertext bit of an EncString, type 2 or 7. */
@@ -211,6 +212,44 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       server.ciphers[0]!.revisionDate = server.nextRevision();
       const r = await a.controller.sync();
       expect([...r.pulled, ...r.cleared, ...r.conflicts]).toEqual([]);
+    });
+
+    describe("blob-encrypted items", () => {
+      const BLOB = JSON.stringify({ format_version: 1, wrapped_cek: "2.x", envelope: "y" });
+      const blobify = (c: CipherDto) => {
+        c.data = BLOB;
+        c.name = "";
+        c.notes = null;
+        c.fields = null;
+        c.login = null;
+      };
+
+      it("holds an item that was synced and then rewritten as a blob, instead of clearing it", async () => {
+        const c = await server.addItem({ name: "k", value: "v" });
+        await server.addItem({ name: "other", value: "o" });
+        await a.controller.sync();
+        blobify(c);
+        c.revisionDate = server.nextRevision();
+        const r = await a.controller.sync();
+        expect(r.cleared).toEqual([]);
+        expect(a.store.get("k")).toBe("v");
+        expect(a.state().base.k).toBeDefined();
+      });
+
+      it("neither adopts nor reports a new blob item", async () => {
+        blobify(await server.addItem({ name: "fresh", value: "v" }));
+        const r = await a.controller.sync();
+        expect([...r.pulled, ...r.created, ...r.pushed, ...r.cleared, ...r.conflicts, ...r.skipped]).toEqual([]);
+        expect(a.store.get("fresh")).toBeNull();
+      });
+
+      it("still reads a legacy item whose data is not a blob", async () => {
+        (await server.addItem({ name: "plain", value: "1" })).data = "not json";
+        (await server.addItem({ name: "obj", value: "2" })).data = '{"uris":[]}';
+        (await server.addItem({ name: "arr", value: "3" })).data = "[1]";
+        (await server.addItem({ name: "nul", value: "4" })).data = "null";
+        expect((await a.controller.sync()).pulled.sort()).toEqual(["arr", "nul", "obj", "plain"]);
+      });
     });
 
     it("stops syncing an item once its obsidian:id field is removed", async () => {
