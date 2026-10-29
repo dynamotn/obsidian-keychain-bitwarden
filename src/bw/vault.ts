@@ -297,12 +297,17 @@ export async function readVault(
   return { records, skipped, present };
 }
 
-/** The SDK's test: `data` parses as a JSON object with a `format_version` key. */
+/**
+ * Mirrors the gate in bitwarden-vault/src/cipher/blob/sealed.rs `from_opaque_string` (sdk-internal 3d16437):
+ * `data` parses as a JSON object with its own `format_version` key (`hasOwn`, like serde's `contains_key`;
+ * `in` would trust a prototype another plugin set). The SDK's struct deserialization step is skipped on
+ * purpose, so a malformed object with `format_version` is held too: the SDK cannot read it either.
+ */
 function isBlobCipher(cipher: CipherDto): boolean {
   if (!cipher.data) return false;
   try {
     const d: unknown = JSON.parse(cipher.data);
-    return typeof d === "object" && d !== null && !Array.isArray(d) && "format_version" in d;
+    return typeof d === "object" && d !== null && !Array.isArray(d) && Object.hasOwn(d, "format_version");
   } catch {
     return false;
   }

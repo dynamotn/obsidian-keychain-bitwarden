@@ -234,6 +234,21 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(r.cleared).toEqual([]);
         expect(a.store.get("k")).toBe("v");
         expect(a.state().base.k).toBeDefined();
+        expect(r.skipped.map((x) => x.cipherId)).toEqual([c.id]);
+        expect(r.skipped[0]!.reason).toContain("kept as is");
+        a.store.set("k", "w");
+        const r2 = await a.controller.sync();
+        expect([...r2.pushed, ...r2.created]).toEqual([]);
+      });
+
+      it("is not fooled by an Object.prototype.format_version set by another plugin", async () => {
+        (await server.addItem({ name: "plain", value: "1" })).data = '{"Name":"x"}';
+        Object.defineProperty(Object.prototype, "format_version", { value: 1, configurable: true, writable: true });
+        try {
+          expect((await a.controller.sync()).pulled).toEqual(["plain"]);
+        } finally {
+          delete (Object.prototype as Record<string, unknown>).format_version;
+        }
       });
 
       it("neither adopts nor reports a new blob item", async () => {
@@ -244,11 +259,12 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       });
 
       it("still reads a legacy item whose data is not a blob", async () => {
-        (await server.addItem({ name: "plain", value: "1" })).data = "not json";
+        (await server.addItem({ name: "plain", value: "1" })).data = JSON.stringify({ Name: "x", Notes: null, Fields: [] });
         (await server.addItem({ name: "obj", value: "2" })).data = '{"uris":[]}';
         (await server.addItem({ name: "arr", value: "3" })).data = "[1]";
         (await server.addItem({ name: "nul", value: "4" })).data = "null";
-        expect((await a.controller.sync()).pulled.sort()).toEqual(["arr", "nul", "obj", "plain"]);
+        (await server.addItem({ name: "txt", value: "5" })).data = "not json";
+        expect((await a.controller.sync()).pulled.sort()).toEqual(["arr", "nul", "obj", "plain", "txt"]);
       });
     });
 
