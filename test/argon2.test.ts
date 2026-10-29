@@ -189,7 +189,9 @@ describe("Argon2 in a worker", () => {
     expect(toBase64(mk)).toBe(a.masterKey);
   });
 
-  it.runIf(typeof Worker !== "undefined")("derives the known-answer key in the embedded worker, as shipped", async () => {
+  // Only the browser suites build the worker (test/setup/argon2-worker.ts); Bun has a Worker but no source for it.
+  const embedded = typeof Worker !== "undefined" && inject("argon2WorkerSource") !== undefined;
+  it.runIf(embedded)("derives the known-answer key in the embedded worker, as shipped", async () => {
     // The same build the plugin embeds in main.js, started the same way: a classic worker from a Blob URL.
     const url = URL.createObjectURL(new Blob([inject("argon2WorkerSource")], { type: "text/javascript" }));
     try {
