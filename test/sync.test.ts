@@ -637,7 +637,8 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       const unnamed = await server.addItem({ name: "unnamed", value: "v" });
       unnamed.name = null as unknown as string;
       const r = await a.controller.sync();
-      expect(r.skipped).toEqual([{ cipherId: noId.id, reason: '"obsidian:id" must be lowercase letters, digits and dashes' }]);
+      // An obsidian:id without a value is a blank marker: the item is unmarked (data model §2).
+      expect(r.skipped).toEqual([]);
       expect(r.pulled).toEqual(["unnamed"]);
       a.store.set("unnamed", "local");
       await server.editValue(unnamed.id, "remote");

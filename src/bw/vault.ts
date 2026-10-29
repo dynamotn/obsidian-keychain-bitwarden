@@ -213,15 +213,18 @@ export async function readVault(
     let key = ownerKey;
     try {
       let fields: Map<string, ToolField>;
+      let id: string;
       try {
         key = await itemKeyFor(cipher, ownerKey);
         fields = await obsidianFields(cipher, key);
+        const idField = fields.get(FIELD_ID);
+        id = idField ? ((await decryptField(idField.value, key)) ?? "").trim() : "";
       } catch {
         present.add(cipher.id);
         continue;
       }
-      const idField = fields.get(FIELD_ID);
-      if (!idField) continue;
+      // A missing or blank obsidian:id leaves the item unmarked (data model §2, §4).
+      if (id === "") continue;
       present.add(cipher.id);
       if (cipher.type !== CipherType.SecureNote && cipher.type !== CipherType.Login) {
         skipped.push({ cipherId: cipher.id, reason: "only login and secure note items are synced" });
@@ -231,7 +234,6 @@ export async function readVault(
         skipped.push({ cipherId: cipher.id, reason: "the organization hides this item's password from you" });
         continue;
       }
-      const id = ((await decryptField(idField.value, key)) ?? "").trim();
       if (!SECRET_ID_PATTERN.test(id)) {
         skipped.push({ cipherId: cipher.id, reason: `"${FIELD_ID}" must be lowercase letters, digits and dashes` });
         continue;
@@ -242,7 +244,9 @@ export async function readVault(
         skipped.push({ cipherId: cipher.id, reason: `unknown "${FIELD_SCOPE}" value` });
         continue;
       }
-      if (fields.has(FIELD_ENCODING)) {
+      // A blank obsidian:encoding means no encoding (data model §3.2).
+      const encodingField = fields.get(FIELD_ENCODING);
+      if (encodingField && ((await decryptField(encodingField.value, key)) ?? "").trim() !== "") {
         skipped.push({ cipherId: cipher.id, reason: `"${FIELD_ENCODING}" is not supported by this plugin` });
         continue;
       }
@@ -429,7 +433,8 @@ export async function updateValueRequest(
         }
       } else {
         // Too long for a field: the notes may take it only if they hold nothing of the user's.
-        if (c.notes && record.location !== "notes") {
+        // Decrypted, since empty notes ("") still encrypt to a non-empty string (data model §6.4).
+        if (record.location !== "notes" && (await decryptField(c.notes, key))) {
           throw new ValueTooLongError(
             `the value is too long for a field (${encValue!.length.toLocaleString("en")} encrypted characters, ` +
               `at most ${FIELD_LIMIT.toLocaleString("en")}), and the notes hold your own text`,

@@ -6,6 +6,3 @@
 # quotes the data model section it breaks and the source location. When the
 # fix lands, the vector passes, it.fails flips it red, and the line goes.
 # Any other reason is a deliberate divergence, quoting the section it follows instead.
-read/encoding-blank bug: data model §3.2, a blank obsidian:encoding mark means no encoding, but the plugin skips the item as soon as the field exists (src/bw/vault.ts:245)
-read/marker-blank bug: data model §2/§4, an item whose obsidian:id is blank is unmarked and not inspected further, but the plugin counts it as present and skips it as an invalid id (src/bw/vault.ts:223-238)
-write/oversize-to-empty-string-notes bug: data model §6.4, empty notes ("") hold nothing of the user's, but the plugin tests the encrypted notes for truthiness and refuses to move an oversize value there (src/bw/vault.ts:432)
