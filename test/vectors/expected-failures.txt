@@ -21,6 +21,7 @@ read/duplicates/bound-winner-kept waits for ADR 0019, rollback, duplicates and s
 sync/rollback-accepted-same-value-local-edit-conflicts waits for ADR 0019, rollback, duplicates and size; the plugin brings it in M6
 sync/rollback-grouped waits for ADR 0019, rollback, duplicates and size; the plugin brings it in M6
 sync/rollback-held waits for ADR 0019, rollback, duplicates and size; the plugin brings it in M6
+sync/rollback-unmarked-held waits for ADR 0019, rollback, duplicates and size; the plugin brings it in M6
 read/requires/unknown-dybw-feature waits for ADR 0020, requires; the plugin brings it in M6
 read/requires/unknown-own-feature waits for ADR 0020, requires; the plugin brings it in M6
 sync/requires-held-not-cleared waits for ADR 0020, requires; the plugin brings it in M6
