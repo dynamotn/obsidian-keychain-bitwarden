@@ -124,7 +124,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
       if (document.visibilityState !== "visible" || !this.controller.isUnlocked) return;
       void this.syncNow(false);
       // Mobile drops the connection in the background: start it again.
-      this.controller.stopHub();
+      this.controller.wake();
       this.updateLiveSync();
     });
   }

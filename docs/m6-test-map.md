@@ -2,7 +2,7 @@
 
 Every test that M6 replaces or removes, with the test that now covers it. No row without a covering test.
 Draft: Task 9 (the controller on dybw-core) fills the controller, sync, organizations and sync-shape rows; Task 11
-adds the hub rows, Task 12 the `src/bw`/`src/sync` unit suites it deletes.
+adds the hub rows (done), Task 12 the `src/bw`/`src/sync` unit suites it deletes.
 
 Until Task 12 deletes `src/bw` and `src/sync`, the suites written for them keep running unchanged in
 `test/legacy/`, on a copy of the old controller (`test/legacy/controller.ts`), so that code stays covered at 100%.
@@ -178,3 +178,58 @@ The scenarios are the same; what they assert follows the core where it reports d
 | the newer sync response, %s account key > unlocks and syncs with the keys where newer servers put them | `test/sync-shape.test.ts`, same name, on the core |
 | the newer sync response, %s account key > uses the master key salt the server gives, not the email | `test/sync-shape.test.ts`, same name, on the core |
 | the newer sync response, %s account key > reads the private key from accountKeys, for organizations and the remembered key | `test/sync-shape.test.ts`, same name, on the core |
+
+### `test/notifications.test.ts` (before M6; kept as `test/legacy/notifications.test.ts` until Task 12)
+
+The hub is the core's (`runHub`, `crates/dybw-core/src/api/hub.rs`): the protocol rows are core tests in
+`crates/dybw-core/src/api/msgpack_tests.rs` and `hub_tests.rs` (dybw-core `cd962fa`); the plugin's own rows, through
+the controller, its socket port and the real core, are in `test/hub.test.ts`. Ruling: `wake()` starts a running hub
+over (stop + restart) instead of only waking one that is down, so a socket a suspend killed silently is replaced too.
+
+| Test | Covered by |
+|---|---|
+| MessagePack decoder (vectors from the Python msgpack library) > (each of the 46 vectors) | dybw-core `msgpack_tests.rs::msgpack_kat`, over the same `vectors/crypto/msgpack.json` (byte-identical) |
+| MessagePack decoder > decodes a real Vaultwarden notification | dybw-core `hub_tests.rs::understands_the_frame_vaultwarden_actually_sends`; `test/hub.test.ts` › notifications hub client > understands the frame Vaultwarden actually sends |
+| MessagePack decoder > decodes %s (bin 32, map 32, int 64 within and beyond the safe range) | dybw-core `msgpack_tests.rs::msgpack_wide_headers` and `msgpack_kat` (int 64 vectors) |
+| MessagePack decoder > keeps the type and bytes of an application %s | dybw-core `msgpack_tests.rs::msgpack_ext_and_int_keys` and `msgpack_wide_headers` |
+| MessagePack decoder > rejects %s | dybw-core `msgpack_tests.rs::msgpack_rejects` and `msgpack_huge_array_header_fails_without_allocating` |
+| MessagePack decoder > rejects deep nesting instead of overflowing the stack | dybw-core `msgpack_tests.rs::msgpack_rejects` ("depth 33") |
+| MessagePack decoder > does not let map keys reach the object prototype | dybw-core `msgpack_tests.rs::msgpack_ext_and_int_keys` (a map is a list of pairs in Rust: no prototype; no JS object is built from a notification any more) |
+| SignalR framing > splits several length-prefixed messages | dybw-core `msgpack_tests.rs::signalr_frames` |
+| SignalR framing > reads multi-byte lengths | dybw-core `msgpack_tests.rs::signalr_frames` |
+| SignalR framing > rejects %s | dybw-core `msgpack_tests.rs::signalr_frames` |
+| SignalR framing > rejects oversized messages | dybw-core `msgpack_tests.rs::signalr_frames` |
+| hub URLs > %s | dybw-core `hub_tests.rs::hub_urls`; `test/controller.test.ts` › SecretsController > notifications hub > authenticates the hub with the current session |
+| notifications hub client > negotiates MessagePack, then reports a change made elsewhere | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::negotiates_messagepack_then_reports_a_change_made_elsewhere` |
+| notifications hub client > understands the frame Vaultwarden actually sends | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::understands_the_frame_vaultwarden_actually_sends` |
+| notifications hub client > accepts the handshake and a first message in one frame | dybw-core `hub_tests.rs::accepts_the_handshake_and_a_first_message_in_one_frame` |
+| notifications hub client > ignores changes this device made itself, and non-vault notifications | `test/hub.test.ts`, same name, on the core, with the device's own id; and › ignores changes an upgraded device made itself, under the id it had before the core; dybw-core `hub_tests.rs::ignores_changes_this_device_made_itself_and_other_push_types` |
+| notifications hub client > coalesces a burst and spaces reports out | `test/hub.test.ts`, same name, on the core, and › syncs once for a change pushed by another device; dybw-core `hub_tests.rs::coalesces_a_burst_and_spaces_reports_out` |
+| notifications hub client > sends pings while connected | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::sends_pings_while_connected` |
+| notifications hub client > reconnects with growing delays after the connection drops | `test/hub.test.ts`, same name, on the core (first two delays); dybw-core `hub_tests.rs::reconnects_with_growing_delays_after_the_connection_drops` |
+| notifications hub client > keeps backing off from a server that accepts the handshake, then closes at once | dybw-core `hub_tests.rs::keeps_backing_off_from_a_server_that_accepts_the_handshake_then_closes_at_once` |
+| notifications hub client > reconnects when the server goes silent | dybw-core `hub_tests.rs::reconnects_when_the_server_goes_silent` |
+| notifications hub client > starts over after %s (a refused handshake, a malformed handshake) | dybw-core `hub_tests.rs::starts_over_after_a_refused_or_malformed_handshake` |
+| notifications hub client > starts over after malformed MessagePack | dybw-core `hub_tests.rs::starts_over_after_malformed_messagepack_and_reports_nothing` |
+| notifications hub client > starts over when the server sends Close | dybw-core `hub_tests.rs::starts_over_when_the_server_sends_close_and_reconnects_once_for_two`, `run_hub_follows_a_close_from_the_server` |
+| notifications hub client > retries later when no URL can be had (for example while logging in fails) | dybw-core `hub_tests.rs::run_hub_backs_off_when_no_url_can_be_had_or_the_connect_fails` |
+| notifications hub client > stops for good: no reconnect and no late reports | `test/hub.test.ts`, same name, on the core, and › stops when locked, and never reconnects with the old token; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
+| notifications hub client > with timers that may still fire after being cleared > reports no change once stopped | `test/hub.test.ts` › stops for good: no reconnect and no late reports (the core checks `stop` before reporting; the plugin's `sleepMs` ends on the hub's signal) |
+| notifications hub client > with timers that may still fire after being cleared > does not reconnect once stopped | `test/hub.test.ts` › stops for good: no reconnect and no late reports; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
+| notifications hub client > with timers that may still fire after being cleared > never pings a new socket before its handshake | dybw-core `hub_tests.rs::sends_pings_while_connected` (the sans-I/O `Hub` pings only on a tick of a connected session; there is one socket at a time) |
+| notifications hub client > wakes up at once instead of waiting for the next attempt | `test/hub.test.ts`, same name, on the core (`SecretsController.wake`) |
+| notifications hub client > ignores a stale socket's events after reconnecting | `test/core/ports.test.ts` › socket ports > close closes the socket, ends a waiting recv with null and forgets the id (a closed socket's id is forgotten: its late frames reach no `recv`) |
+| notifications hub client > ignores a stale socket's open, error and close events after reconnecting | `test/core/ports.test.ts` › socket ports > close closes the socket, ends a waiting recv with null and forgets the id |
+| notifications hub client > keeps its connection when started again | `test/hub.test.ts`, same name, on the core |
+| notifications hub client > does not wake a connection that is up, or a hub that was stopped | `test/hub.test.ts` › does not wake a hub that was stopped; the first half is changed by the ruling above: › starts a connection that looks up over when woken |
+| notifications hub client > opens one socket when woken while the first URL is still on its way | `test/hub.test.ts` › starts a connection that looks up over when woken (the stopped run closes its socket at its next stop check; one socket stays open) |
+| notifications hub client > does not retry for a URL request that an earlier wake superseded | `test/hub.test.ts` › starts a connection that looks up over when woken (the core reads the URL from its own keys, without a request: nothing to supersede) |
+| notifications hub client > opens no socket when stopped while the URL is on its way | `test/controller.test.ts` › SecretsController > notifications hub > fails while locked, without contacting the server; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
+| notifications hub client > retries later when the socket cannot be created | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::run_hub_backs_off_when_no_url_can_be_had_or_the_connect_fails` |
+| notifications hub client > starts over after a socket error | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::run_hub_reconnects_after_the_socket_ends_or_fails` |
+| notifications hub client > starts over when a ping cannot be sent | dybw-core `hub_tests.rs::run_hub_starts_over_after_a_send_fails` |
+| notifications hub client > accepts the handshake as a text frame, and ignores text after it | dybw-core `hub_tests.rs::accepts_the_handshake_as_a_text_frame_and_ignores_text_after_it` |
+| notifications hub client > starts over after a message of a type the socket should never deliver | `test/core/ports.test.ts` › socket ports > queues frames in order, text and binary, until recv takes them (the port hands only text or bytes to the core) |
+| notifications hub client > stays connected and reports nothing for %s | dybw-core `hub_tests.rs::stays_connected_and_reports_nothing_for_messages_it_does_not_act_on` |
+| notifications hub client > reconnects once when one message closes the connection twice | dybw-core `hub_tests.rs::starts_over_when_the_server_sends_close_and_reconnects_once_for_two` |
+| notifications hub client with the default timers > schedules retries on window timers and clears them on stop | `test/core/ports.test.ts` › sleepMs resolves after its time, › sleepMs ends at once on the hub's stop signal, also one aborted before, and never rejects |

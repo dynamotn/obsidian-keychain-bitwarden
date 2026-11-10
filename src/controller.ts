@@ -208,6 +208,8 @@ export class SecretsController {
   private unlocking: AbortController | null = null;
   /** Stops the running hub and ends its sleeps at once (the clock port reads it). */
   private hub: AbortController | null = null;
+  /** What the running hub calls on a change, for `wake` to start it again with. */
+  private hubOnChange: (() => void) | null = null;
   /** The local values the running sync was given; a value typed since is never written over. */
   private snapshot: Map<string, string> | null = null;
   /** The running sync found a value typed since it started. */
@@ -577,6 +579,7 @@ export class SecretsController {
     if (this.hub || !this.unlocked) return Promise.resolve();
     const stop = new AbortController();
     this.hub = stop;
+    this.hubOnChange = onChange;
     return this.call((session) => session.runHub(onChange, () => stop.signal.aborted))
       .catch(() => undefined)
       .finally(() => {
@@ -587,6 +590,17 @@ export class SecretsController {
   stopHub(): void {
     this.hub?.abort();
     this.hub = null;
+  }
+
+  /**
+   * Starts a running hub over at once, for an app back from the background: a socket kept across a suspend can be
+   * dead without saying so, and a reconnect may be waiting out a long backoff. Does nothing when no hub runs.
+   */
+  wake(): void {
+    const onChange = this.hub && this.hubOnChange;
+    if (!onChange) return;
+    this.stopHub();
+    void this.startHub(onChange);
   }
 
   deviceId(): Promise<string> {

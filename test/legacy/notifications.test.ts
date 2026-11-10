@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import vectors from "./fixtures/msgpack.json";
-import { decodeMsgPack, MsgPackError, splitSignalRFrames, type MsgValue } from "../src/bw/msgpack";
-import { hubUrl, NotificationHub, type SocketLike } from "../src/bw/notifications";
-import { resolveServerUrls } from "../src/bw/api";
+import vectors from "../fixtures/msgpack.json";
+import { decodeMsgPack, MsgPackError, splitSignalRFrames, type MsgValue } from "../../src/bw/msgpack";
+import { hubUrl, NotificationHub, type SocketLike } from "../../src/bw/notifications";
+import { resolveServerUrls } from "../../src/bw/api";
 
 const hex = (s: string) => new Uint8Array(s.replace(/\s+/g, "").match(/../g)?.map((b) => parseInt(b, 16)) ?? []);
 
