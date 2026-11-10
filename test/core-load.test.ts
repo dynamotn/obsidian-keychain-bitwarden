@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { coreLoader } from "../src/core/load";
 
 describe("coreLoader", () => {
@@ -8,5 +8,17 @@ describe("coreLoader", () => {
     expect(first).toBe(second);
     expect(await load()).toBe(first);
     expect(first.memory).toBeInstanceOf(WebAssembly.Memory);
+  });
+
+  it("a load that fails rejects instead of throwing, and the next call tries again", async () => {
+    const atob = vi.spyOn(globalThis, "atob").mockImplementationOnce(() => {
+      throw new DOMException("corrupt", "InvalidCharacterError");
+    });
+    const load = coreLoader();
+    const failed = load();
+    await expect(failed).rejects.toThrow("corrupt");
+    expect((await load()).memory).toBeInstanceOf(WebAssembly.Memory);
+    expect(atob).toHaveBeenCalledTimes(2);
+    atob.mockRestore();
   });
 });

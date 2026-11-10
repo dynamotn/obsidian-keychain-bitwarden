@@ -238,6 +238,9 @@ export function hostPorts(deps: PortDeps) {
     /**
      * The next frame, `null` once closed. A frame leaves the queue only to resolve a promise, and a call made while
      * one waits gets that same promise: the core drops a `recv` its timer beat and asks again, losing nothing.
+     * Invariant this relies on: a frame is gone from `frames` once its promise resolves, even if the core never
+     * reads it. That is safe only because the core's hub polls `recv` before its timer (a biased select) and never
+     * keeps two `recv`s alive at once; a core that raced several would lose the frames the losers resolved with.
      */
     socketRecv(id: number): Promise<Frame | null> {
       const conn = sockets.get(id);
