@@ -20,6 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      BINARYEN_VERSION: version_133
+      # sha256 of binaryen-version_133-x86_64-linux.tar.gz, from the release's .sha256 file.
+      BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+      DYBATPHO_DIR: ${{ github.workspace }}/vendor/dybatpho
+      WASM_OPT: ${{ github.workspace }}/vendor/binaryen/bin/wasm-opt
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -31,6 +40,31 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
+      # The dybw-core WASM module main.js embeds: the public core at the commit in core.rev, built with the
+      # toolchain the core's own CI pins (its wasm-vectors job).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: dynamotn/dybatpho
+          ref: 67b2b992c1fb6100a5ac8a65a1d7f92372feffb1
+          path: vendor/dybatpho
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable ref; the input picks the toolchain
+        with:
+          toolchain: 1.99.1
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: wasm-bindgen@0.2.129
+      - name: Install binaryen
+        run: |
+          tarball="binaryen-$BINARYEN_VERSION-x86_64-linux.tar.gz"
+          curl -sSfLO "https://github.com/WebAssembly/binaryen/releases/download/$BINARYEN_VERSION/$tarball"
+          echo "$BINARYEN_SHA256  $tarball" | sha256sum -c -
+          mkdir -p vendor/binaryen
+          tar -xzf "$tarball" -C vendor/binaryen --strip-components 1
+          rm "$tarball"
+          "$WASM_OPT" --version
+      - run: scripts/build-core.sh
 
       - name: Check that the tag matches the plugin version
         run: |
@@ -54,7 +88,9 @@ jobs:
       - run: npm run check:bundle
       # Handed over before the tests run, so test dependencies never get to touch
       # the files; publish still waits for this whole job to pass.
-      - run: sha256sum main.js manifest.json
+      - run: |
+          echo "dybw-core $(cat core.rev)"
+          sha256sum main.js manifest.json vendor/dybw-core/dybw_core_wasm_bg.wasm
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release
