@@ -184,6 +184,20 @@ running is never overwritten.
   can add items to a collection you see can do this. A personal item can
   never be replaced that way, and your own values are never sent to such an
   item without asking, but an organization-only secret can be set by them.
+- **A self-hosted server is acknowledged once per device.** Obsidian follows
+  redirects and cannot tell where a request ended up, so the API key is sent
+  to a self-hosted server only after you accept, on this device, that it or a
+  proxy in front of it could redirect the key (asked at unlock, or in the
+  settings). Bitwarden cloud is not affected.
+- **A server cannot quietly weaken your account.** The key derivation
+  settings and the account's security state version seen on this device are
+  kept; weaker settings, or an older state, are refused until you confirm
+  them. Secrets that come back older from Bitwarden keep this device's values
+  until you accept the older ones.
+- **Writing into a login's password asks first.** The first time this device
+  writes the password of a login you marked by hand, and before a write would
+  push a password the plugin did not write out of the item's history, you
+  choose: write to the login, or keep the secret in its own field.
 - **Live updates carry no secrets.** A notification only triggers a regular
   sync, which fetches and verifies everything. A misbehaving server can at
   most cause extra syncs, which are coalesced and spaced out.
@@ -225,10 +239,6 @@ npm run test:coverage      # the same, failing below 100% coverage of the code t
 npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (≈ Android)
 npm run perf               # performance budgets (add :browser for WebKit/Chromium)
 
-# The dybw conformance vectors (dybw-core), opt-in; test/vectors/expected-failures.txt lists the vectors
-# that fail today (`bug:` lines are known plugin defects awaiting a fix):
-DYBW_VECTORS_DIR=<dybw-core>/vectors npm run test:vectors
-
 # Against a real server, cross-checked with rbw and the official Bitwarden CLI:
 docker run -d --rm --name keychain-bw-it -p 127.0.0.1:18080:80 \
   -e SIGNUPS_ALLOWED=true -e SIGNUPS_VERIFY=false \
@@ -237,28 +247,18 @@ docker run -d --rm --name keychain-bw-it -p 127.0.0.1:18080:80 \
 BW_IT_URL=http://127.0.0.1:18080 npm run test:integration
 ```
 
-The known-answer vectors come from independent Python implementations: the
-crypto in `test/fixtures/vectors.json` from `gen_vectors.py`, the
-MessagePack of the notifications hub in `test/fixtures/msgpack.json` from
-`gen_msgpack.py`. To regenerate them:
-
-```sh
-uv run --no-project --with cryptography --with argon2-cffi python test/fixtures/gen_vectors.py
-uv run --no-project --with msgpack python test/fixtures/gen_msgpack.py
-```
-
-The vectors for Bitwarden's newer encryption, `test/fixtures/cose-vectors.json`,
-come from Bitwarden's own SDK, through the small Rust program in
-`test/fixtures/sdk-vectors`. With Rust installed, `npm run test:sdk` also has
-the SDK decrypt what the plugin encrypts. To regenerate the vectors:
-
-```sh
-cd test/fixtures/sdk-vectors && cargo run --release -- generate > ../cose-vectors.json
-```
+Login, unlock, the sync and the notifications hub run in
+[dybw-core](https://gitlab.com/dynamo-tools/dybw-core), compiled to WebAssembly and
+embedded in `main.js`; `core.rev` names the commit (now `cd962fa`). Its own
+suites cover the cryptography (known answers from independent Python
+implementations and from Bitwarden's SDK, which also decrypts what the core
+encrypts) and the dybw conformance vectors, in Node, Chromium and WebKit.
+`docs/m6-test-map.md` lists which core test took over each test the plugin
+had before.
 
 To release, set the new version in `manifest.json`, `package.json`,
 `versions.json` (mapped to `minAppVersion`) and `CLIENT_VERSION` in
-`src/bw/api.ts`, commit, and push a tag equal to it without a `v`, e.g.
+`src/controller.ts`, commit, and push a tag equal to it without a `v`, e.g.
 `git tag 0.2.0`. The release workflow checks that they all agree, runs the
 tests, and publishes `main.js` and `manifest.json`. It builds with a
 read-only token, without dependency install scripts or a cache, and only a

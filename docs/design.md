@@ -4,19 +4,30 @@ This document records how the plugin works, why it is built the
 way it is, and how it was verified. The user-facing summary is in
 [`README.md`](../README.md).
 
-- Follows the **dybw data model, version 1.2** (namespace `obsidian`), shared
+- Follows the **dybw data model, version 1.6** (namespace `obsidian`), shared
   with bwss and the other dybw tools in the `dybw` umbrella repository
-  (`docs/data-model.md`). Version 1.2 adopted ADR 0009 (pull-only
-  organization bindings; the first push to an organization item is
-  confirmed per cipher) and ADR 0010 (a blank `obsidian:location` is absent;
-  stale notes are cleared once the value fits).
+  (`docs/data-model.md`), through **dybw-core**, the shared Rust core the
+  plugin runs on since M6. Beyond 1.2 (ADR 0009: pull-only organization
+  bindings, the first push to an organization item confirmed per cipher;
+  ADR 0010: a blank `obsidian:location` is absent, stale notes cleared once
+  the value fits) that is ADR 0011 (lookup attributes, 1.3), ADR 0014
+  (removing a tool field, 1.4), ADR 0016 (password history protected),
+  ADR 0019 (server integrity checks) and ADR 0020 (`dybw:requires`) (1.5),
+  and ADR 0021 (blob ciphers, 1.6). The core also brings ADR 0017 (KDF
+  parameters pinned per device) and ADR 0018 (redirects and acknowledged
+  origins).
+- dybw-core at `cd962fa` (`core.rev`), compiled to WebAssembly and embedded
+  in `main.js` (ADR 0024 budget: 1 572 864 bytes for `main.js`).
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
-- Runtime dependencies: `hash-wasm` (Argon2id) and `@noble/ciphers`
-  (XChaCha20-Poly1305). Everything else is WebCrypto, Web Workers, WebSocket
-  and the Obsidian API.
-- Bundle: one 125.6 KiB `main.js` (production build), with the Argon2
-  worker embedded in it. Its only import is `obsidian`.
+- Runtime dependency: `hash-wasm` (Argon2id, in the worker the core's
+  `argon2id` port calls). Everything else is the core's WASM module,
+  WebCrypto (RSA-OAEP for organization keys, randomness), Web Workers,
+  WebSocket and the Obsidian API. `@noble/ciphers` is a dev dependency of the
+  test crypto only.
+- Bundle: one `main.js` of 1 246 464 bytes (production build), with the core
+  module (base64) and the Argon2 worker embedded in it. Its only import is
+  `obsidian`.
 
 ## Contents
 
@@ -63,8 +74,10 @@ back.
 
 - Other plugins need no changes: they keep calling
   `app.secretStorage.getSecret(...)`.
-- The Bitwarden client logic is implemented directly on web platform APIs,
-  so one code base runs on every Obsidian platform.
+- The Bitwarden client logic (login, unlock, cryptography, the sync, the
+  notifications hub) is dybw-core's, compiled to WebAssembly and run on host
+  ports over web platform and Obsidian APIs, so one module runs on every
+  Obsidian platform and the same logic serves the other dybw tools.
 
 ## 2. Verified facts about Obsidian SecretStorage
 
@@ -96,42 +109,42 @@ How these facts shaped the design:
 flowchart LR
   subgraph Obsidian
     P[other plugins] -- getSecret --> SS[(app.secretStorage)]
-    UI[main.ts / ui.ts<br/>commands, modals,<br/>settings, status bar] --> C
-    C[controller.ts<br/>keys, session,<br/>run queue, cancel] --> E
-    E[sync/engine.ts<br/>fetch, decrypt, apply] --> PL[sync/plan.ts<br/>pure 3-way planner]
-    E <--> SS
-    C <--> LS[(vault localStorage<br/>settings + device state)]
+    UI[main.ts / ui.ts / questions.ts<br/>commands, modals,<br/>settings, status bar] --> C
+    C[controller.ts<br/>status, run queue,<br/>API-key binding, hub start/stop] --> WS
+    subgraph WASM[dybw-core WASM module]
+      WS[WasmSession<br/>login, unlock, sync,<br/>hub, questions]
+    end
+    WS -- host ports --> PO[core/ports.ts]
+    PO <--> SS
+    PO <--> LS[(vault localStorage<br/>settings + device state)]
+    PO --> W[bw/argon2.ts<br/>Argon2id in a Worker]
   end
-  E --> V[bw/vault.ts<br/>item mapping,<br/>organization keys]
-  V --> K[bw/crypto.ts<br/>KDF, EncString, RSA]
-  K --> W[bw/argon2.ts<br/>Argon2id in a Worker]
-  E --> A[bw/api.ts<br/>REST client]
-  A -- requestUrl --> BW[(Bitwarden / Vaultwarden)]
-  UI --> H[bw/notifications.ts<br/>live updates]
-  H -- WebSocket, SignalR --> BW
+  PO -- requestUrl --> BW[(Bitwarden / Vaultwarden)]
+  PO -- WebSocket, SignalR --> BW
 ```
 
 | Module | Responsibility | Depends on `obsidian`? |
 |---|---|---|
-| `src/bw/encoding.ts` | base64 and UTF-8 without `Buffer` | no |
-| `src/bw/crypto.ts` | PBKDF2/Argon2id, HKDF-Expand, `SymmetricKey` (legacy and COSE), EncString types 2 and 7, key wrapping, RSA-OAEP organization keys, `ValueFingerprinter` | no |
-| `src/bw/cose.ts`, `src/bw/cbor.ts`, `src/bw/aead.ts` | COSE_Key and COSE_Encrypt0 as the SDK defines them; a bounded CBOR codec; XAES-256-GCM (WebCrypto) and XChaCha20-Poly1305 (`@noble/ciphers`) | no |
+| dybw-core (`vendor/dybw-core`, built by `scripts/build-core.sh` at `core.rev`) | URL resolution, prelogin, API-key login, unlock (KDF, keys, organization keys, KDF pin, security state, acknowledged origins), EncString types 2 and 7, blob ciphers, the three-way plan and the sync run, the notifications hub; one `WasmSession` per plugin instance | no |
+| `src/core/load.ts` | Decodes and instantiates the embedded module once; a failed load is tried again on the next call | no |
+| `src/core/ports.ts` | The host ports: `http` over `requestUrl` (30 s bound), storage keys mapped onto the plugin's own, secrets, clock and sleeps, randomness, the Argon2 runner, RSA-OAEP through WebCrypto, the socket queue | type only |
+| `src/core/errors.ts` | The core's `{code, message}` rejections as typed errors | no |
 | `src/bw/argon2.ts`, `src/bw/argon2.worker.ts` | Argon2id runners: in a Worker (cancellable, with a timeout) or on the calling thread | no |
-| `src/bw/msgpack.ts` | Bounds-checked MessagePack decoder and SignalR framing | no |
-| `src/bw/notifications.ts` | Notifications hub client: handshake, pings, reconnect, coalescing | no |
-| `src/bw/http.ts` | `HttpClient` abstraction (`requestUrl` in the plugin, `fetch` in tests) | no |
-| `src/bw/api.ts` | URL resolution, prelogin, API-key login, sync, folder and item writes, error shaping | no |
-| `src/bw/vault.ts` | Unlock, organization keys, folder lookup, `readVault`, request builders, scopes | no |
-| `src/sync/plan.ts` | Pure three-way reconciliation: no I/O, deterministic | no |
-| `src/sync/engine.ts` | One sync run: passes, safety guards, applying actions | no |
-| `src/sync/state.ts` | Per-device state type, validation, reset | no |
-| `src/controller.ts` | Session and keys, API-key origin binding, run queue, cancellation on lock | no |
+| `src/controller.ts` | Status, the run queue with merged conflict choices and answers, the API-key origin binding, the remembered key, lock and trap handling, the hub's start, stop and wake | no |
+| `src/questions.ts` | The core's questions (ADR 0016, 0017, 0018, 0019) as dialog texts and their answers | no |
 | `src/settings.ts` | Settings type, defaults, strict parsing | no |
 | `src/main.ts`, `src/ui.ts` | Obsidian glue: commands, timers, modals, settings tab | yes |
 
 Everything except `main.ts` and `ui.ts` can be imported without Obsidian.
 That is what lets the same code run under Node, in WebKit and Chromium, and
 against a real server in the tests.
+
+Sections 4 to 6 describe the behaviour the plugin had before M6, which the
+core took over rule for rule (`docs/m6-test-map.md` maps every test that
+moved); file names there (`plan.ts`, `engine.ts`, `crypto.ts`,
+`notifications.ts`) are the plugin's former modules, now the core's `sync`,
+`vault`, `crypto` and `api::hub`. What the core changed or added is noted in
+place.
 
 ## 4. Data model in Bitwarden
 
@@ -314,9 +327,9 @@ in a **Web Worker**:
   - Argon2id: 2–10 iterations, 16–1024 MiB, 1–16 lanes.
   - The lower bounds stop a server from downgrading the KDF. The upper
     bounds stop it from freezing the device.
-- Keys are imported as non-extractable CryptoKeys. The raw copy is kept
-  only to support "remember on this device", and it is zeroed on wipe
-  (best effort: JavaScript strings cannot be wiped).
+- Since M6 keys live in the core's WASM memory and are wiped on lock; they
+  leave it only as the remembered key, a JavaScript string that cannot be
+  wiped (only when "remember on this device" is on).
 
 ### The newer ("v2") encryption: COSE keys and EncString type 7
 
@@ -348,6 +361,24 @@ user key. Everything follows Bitwarden's SDK (`bitwarden-crypto`):
   `userDecryption.masterPasswordUnlock` together with the master key's
   **salt**, which may differ from the email, and the private key in
   `profile.accountKeys`. Both shapes are read; the salt is used when given.
+
+### Since M6: the remembered key, the KDF pin and the security state
+
+- **Remembered key**: with *Remember unlock on this device* on, the core's
+  `exportUserKey` gives the user key after a password unlock, kept in
+  `keychain-bitwarden-user-key`. The next start unlocks with
+  `unlockWithKey(profile, clientSecret, key)`: the core logs in with the API
+  key and checks the key against the account (its private key, its security
+  state) before using it; a key it refuses (stale after a rotation,
+  malformed) is forgotten and the password asked for.
+- **KDF pin (ADR 0017)**: the KDF parameters of the first unlock are pinned
+  per device and identity origin; weaker ones are refused before any
+  derivation until the user confirms them (`acceptKdf`).
+- **Security state (ADR 0019)**: a COSE account's signed security state is
+  verified at unlock, and its version may not go below the one this device
+  saw, unless the user accepts it (`acceptSecurityVersion`). A COSE account
+  without a signed state is refused. From version 2 a new personal item is
+  written as a blob (ADR 0021).
 
 ### Value fingerprints
 
@@ -430,9 +461,12 @@ Notes on the table:
   it, not merged into it. Uploads queued and conflict choices made during a
   run are therefore applied by the next run, never dropped. Several calls
   made during the same run share one queued run.
-- **One live `DeviceState` object** per controller. `queueUpload` and the
-  engine mutate the same object, so concurrent writes cannot overwrite each
-  other. `resetState()` refuses to run while a sync is in progress.
+- **One state** per device, the core session's. `queueUpload`, `resetState`
+  and `uploadCandidates` take the session's keys one after another with the
+  sync (the core answers `busy` otherwise), so they wait for a running sync
+  instead of racing it. A value typed during a sync is never written over:
+  the core writes values at the end of a run, and the controller refuses a
+  write to a secret that changed since the run started, then runs once more.
 
 ### 6.4 Triggers (`main.ts`)
 
@@ -443,10 +477,15 @@ Notes on the table:
 - When Obsidian becomes visible again (`visibilitychange`): desktop focus,
   mobile resume. The hub reconnects at the same moment.
 
-### 6.5 Live updates (`notifications.ts`)
+### 6.5 Live updates (the core's `runHub`)
 
 While unlocked and with *Live updates* on (the default), the plugin keeps a
-WebSocket to the server's notifications hub, as the official clients do:
+WebSocket to the server's notifications hub, as the official clients do. The
+hub runs in the core (`WasmSession.runHub`), on the plugin's socket port and
+sleeps; the controller starts it after unlock, stops it on lock, and on
+resume (`visibilitychange`) starts it over (`wake`), since a socket kept
+across a suspend can be dead without saying so. The hub uses the sync's
+access token and device id; it keeps running during a sync.
 
 - **Endpoint**: `wss://notifications.bitwarden.com/hub`,
   `wss://notifications.bitwarden.eu/hub`, or `<server>/notifications/hub`
@@ -480,7 +519,9 @@ device** (`app.saveLocalStorage`):
 | Key | Content |
 |---|---|
 | `keychain-bitwarden:settings` | server URL, email, folder for uploads, conflict policy, organization items, live updates, remember key, sync interval, auto-lock |
-| `keychain-bitwarden:state` | `deviceId`, `base` (per id: `cipherId`, `revisionDate`, `fingerprint`, `scope`), pending uploads and their scopes |
+| `keychain-bitwarden:state` | `deviceId`, `base` (per id: `cipherId`, `revisionDate`, `fingerprint`, `scope`), pending uploads and their scopes; the core's `sync-state`, the same JSON |
+| `keychain-bitwarden:device` | the device id the core logs in with; on a device upgraded to M6 it falls back to the state's `deviceId`, so the device keeps its identity |
+| `keychain-bitwarden:kdf-pin`, `:security-version`, `:acknowledged-origins` | ADR 0017's pinned KDF, ADR 0019's highest security state version seen, ADR 0018's acknowledged self-hosted origins |
 
 `data.json` is not used. It is routinely synced (Obsidian Sync, iCloud) or
 committed to Git. The audit showed that if `serverUrl` lived there, anyone
@@ -517,7 +558,13 @@ prefix:
   the kind of conflict. For each conflict the user picks "Use Bitwarden" or
   "Use this device" ("Clear on this device" or "Upload again" for remote
   deletions), or "Decide later".
-- **Settings tab**: account (server, email, API key), sync (folder for uploads, live
+- **Question dialogs** (since M6, from the core's report or rejection, each
+  answered on the next call): writing into a login's password (ADR 0016),
+  weaker key derivation (ADR 0017), a self-hosted server to acknowledge
+  (ADR 0018), an older account security state and secrets that came back
+  older (ADR 0019). A question asked before a lock is dropped.
+- **Settings tab**: account (server, email, API key; for a self-hosted
+  server, the ADR 0018 acknowledgement toggle), sync (folder for uploads, live
   updates, interval, conflict policy, organization items), security
   (remember unlock, auto-lock), and actions (lock/unlock, sync, reset sync
   state; the device id is shown).
@@ -585,7 +632,8 @@ Static analysis:
   property of Obsidian, not of this plugin.
 - **A malicious server** cannot forge ciphertext. It can still:
   - withhold items, which the mass-clear guard limits;
-  - roll back to old values;
+  - roll back to old values: since M6 a synced item that comes back with an
+    older revision is held and the user asked (ADR 0019);
   - not make another personal item a secret: the `obsidian:id` marker is
     an encrypted field name, unlike the unauthenticated `folderId` an
     earlier folder-based design relied on;
@@ -600,54 +648,50 @@ Static analysis:
     opt-in and the settings text;
   - send notifications at will, which only cause coalesced extra syncs;
   - on a v2 account, serve an older user key from before a key rotation:
-    the plugin does not check the signed "security state" the SDK uses
-    against such downgrades.
-- **Redirects**: `requestUrl` gives no control over redirects. A 307/308 to
-  another host could carry the token request body. (The companion `bwss`
-  Secret Service daemon, which lives in a separate repository, disables
-  redirects for this reason.)
+    since M6 the core verifies the signed security state and refuses a lower
+    version than the one this device saw, unless the user accepts it
+    (ADR 0019); a first unlock on a new device has nothing to compare with.
+- **Redirects (ADR 0018)**: `requestUrl` follows redirects and gives no
+  control over them, and its response carries no final URL, so the plugin
+  cannot even check after the fact where a request ended up. Its `http` port
+  therefore declares `refusesRedirects: false`, and the core sends the API
+  key and the bearer token only to Bitwarden cloud's identity origins or to a
+  self-hosted origin the user acknowledged on this device (asked at unlock,
+  or the settings toggle "I accept that this server, or a proxy in front of
+  it, could redirect my API key"; turning it off locks). An acknowledged
+  server, or a proxy in front of it, can still redirect the token request
+  body to another host; that is the risk the user accepts. (The companion
+  `bwss` daemon refuses redirects, and needs no acknowledgement.)
 
 ## 10. Verification
+
+At M6 (dybw-core `cd962fa`):
 
 | Suite | Command | Result |
 |---|---|---|
 | Typecheck, plugin and tests | `npm run typecheck` (TypeScript 7, strict, `noUncheckedIndexedAccess`) | clean |
 | Lint (`eslint-plugin-obsidianmd`, the community review rules) | `npm run lint` | 0 errors; 3 warnings about the settings API of Obsidian 1.13, kept for `minAppVersion` 1.11.4 |
-| Unit and multi-device sync (in-memory Bitwarden), every account kind | `npm test` | **611 passed**, 3 skipped (the real-worker tests, which need a browser, and the SDK check) |
+| Unit and multi-device sync (in-memory Bitwarden), every account kind, on the core | `npm test` | **504 passed**, 2 skipped (the real-worker tests, which need a browser) |
 | Coverage of the code that runs without Obsidian (all but `main.ts`, `ui.ts` and the worker) | `npm run test:coverage` | **100%** statements, branches, functions and lines; below that it fails |
-| Same suites in WebKit and Chromium | `npm run test:browser` | **1226 passed** (613 × 2) |
-| Bitwarden's SDK decrypts what the plugin encrypted | `npm run test:sdk` (needs Rust) | **passed** |
-| Real server + independent clients | `npm run test:integration` | **12 passed** |
+| Same suites in WebKit and Chromium | `npm run test:browser` | **1012 passed** (506 × 2) |
+| Real server + independent clients (Vaultwarden 1.37.5, rbw, the official CLI) | `npm run test:integration` | **16 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
-| Bundle portability gate | `npm run check:bundle` | only `obsidian` is required, no Node globals |
+| Bundle gate (ADR 0024) | `npm run check:bundle` | 1 246 464 of 1 572 864 bytes; only `obsidian` is required, no Node globals |
 
-### 10.1 Known-answer vectors
+### 10.1 Known-answer vectors and the SDK check
 
-`test/fixtures/gen_msgpack.py` encodes 46 values with the official Python
-`msgpack` library (integer and string size classes, 64-bit integers beyond
-2^53, floats, binary, maps and arrays at their size boundaries, the three
-timestamp formats); the decoder must read them back exactly. A frame
-captured from Vaultwarden 1.37.4 is decoded as well.
-
-`test/fixtures/gen_vectors.py` is an **independent Python implementation**
-(`cryptography`, `argon2-cffi`). It produces the PBKDF2 (600,000 iterations)
-and Argon2id (64 MiB, t=3, p=4) master keys, the stretched keys, the master
-password hash, a protected user key, and EncStrings of edge-case plaintexts
-(empty, one byte, exactly one block, Vietnamese with emoji, 1,000 bytes). The
-TypeScript code must reproduce them exactly. The companion Rust `bwss`
-daemon uses the same vectors.
-
-`test/fixtures/cose-vectors.json` comes from **Bitwarden's own SDK**
-(`bitwarden-crypto`, pinned revision), through the Rust program in
-`test/fixtures/sdk-vectors`. For an XAES-256-GCM and an XChaCha20-Poly1305
-account it records the COSE user key, the user key wrapped with the master
-key, strings of edge-case lengths, a legacy and a COSE item key wrapped with
-the user key plus a value under each, and the wrapped private key. The
-plugin must unlock the account with the password, decrypt everything, and
-encode COSE keys byte for byte like the SDK. In the other direction,
-`npm run test:sdk` feeds the plugin's own type 7 ciphertexts to the SDK,
-which must decrypt them. XAES-256-GCM is also checked against the C2SP
-test vectors.
+They moved to dybw-core with the code they check, and run there on every CI
+run, natively and in the WASM build in Node, Chromium and WebKit: the
+crypto known answers from an independent Python implementation
+(`vectors/crypto/vectors.json`: PBKDF2 and Argon2id master keys, stretched
+keys, the password hash, EncStrings of edge-case plaintexts), the
+MessagePack values of the notifications hub, the COSE vectors from
+Bitwarden's own SDK (`cose-vectors.json`), the SDK decrypting what the core
+encrypts (the core's `sdk` job), and the dybw conformance vectors. The files
+are the plugin's former `test/fixtures`, byte-identical. The plugin keeps
+`test/fixtures/vectors.json` for the Argon2 worker's known answer, and a
+frozen copy of its former TypeScript crypto (`test/helpers/bw/`) as an
+independent oracle for the fake server and the Vaultwarden accounts.
 
 ### 10.2 Simulated Bitwarden
 
@@ -685,17 +729,26 @@ keys. Tests run two or more "devices" against it, covering:
 - Argon2id in a worker: cancellation, timeout, worker failure, fallback,
   and the known-answer key from the worker exactly as embedded in `main.js`
   (in WebKit and Chromium);
-- the notifications hub: handshake, coalescing, own-device filtering,
-  pings, backoff, silence detection, malformed input, stale sockets.
+- the notifications hub through the core: handshake, coalescing,
+  own-device filtering (including an upgraded device's former id), pings,
+  backoff, stop on lock, wake on resume (twice in a row, then lock), the
+  socket port's queue;
+- the core's questions (ADR 0016 to 0019) and their answers, and a trap
+  of the WASM instance.
 
 ### 10.3 Against a real server, cross-checked with independent clients
 
 The setup:
 
-- **Vaultwarden 1.37.4** in Docker (`vaultwarden/server:latest`). Tests
+- **Vaultwarden 1.37.5** in Docker (`vaultwarden/server:latest`). Tests
   create throwaway accounts through Vaultwarden's two-step registration,
-  generating keys client-side with the plugin's own crypto, including an
-  RSA key pair.
+  generating keys client-side with the test crypto, including an RSA key
+  pair.
+- The transport is `fetch` with `redirect: "error"`, so the host declares
+  that it refuses redirects and the core needs no acknowledgement. One run
+  follows redirects as `requestUrl` does: it is refused
+  (`origin-not-acknowledged`) until the server is acknowledged, then
+  uploads (ADR 0018).
 - **rbw 1.15** (Rust) as an independent *reader*. It reads the item the
   plugin wrote.
 - **Official Bitwarden CLI 2026.10.0** as an independent *reader and
@@ -715,17 +768,33 @@ The setup:
 - An **Argon2id account** unlocks and uploads.
 - Accounts on the **newer encryption** (XAES-256-GCM and XChaCha20-Poly1305
   user keys): two devices upload, pull and edit, and everything the server
-  stores (item names, custom fields, folder names) is type 7. The official CLI
-  cannot be used here: it refuses these test accounts, which lack the
-  signing keys a real v2 account also has; the SDK check above covers the
-  format instead.
+  stores (item names, custom fields, folder names) is type 7. Vaultwarden
+  has nowhere to keep a signing key or a signed security state (it answers
+  both as `null`), and the core refuses a COSE account without one
+  (ADR 0019): the test signs a state with the test crypto at registration
+  and adds it to `/api/sync`, as a newer client would have uploaded it.
+  These runs use security state version 1, so new items are written field
+  by field. The official CLI cannot be used here: it refuses these test
+  accounts; the core's SDK check covers the format instead.
+- What Vaultwarden 1.37.5 refuses (recorded as tests, open in dybw-core):
+  a **blob** item (a new item of a COSE account at security version 2,
+  ADR 0021) is answered 422 at any size, and the upload stays queued; past
+  10 000 characters the core refuses before sending. A push to an item the
+  server sends without its `secureNote` part carries the part as `null`, and
+  Vaultwarden answers 400 "Data missing"; the value stays on the device.
+  Vaultwarden itself never stores such an item. No bitwarden.com account was
+  available to check either answer there.
 - An **organization**, created the way the web vault creates one, with a
   marked item in no folder: the plugin pulls it, pushes an edit
   encrypted with the organization key, and the item stays in its
   organization.
-- The **notifications hub**: device B uploads, device A hears about it
-  within seconds and pulls it, and B's own change is not reported back to
-  B (so `ContextId` is the `deviceIdentifier` the plugin logs in with).
+- The **notifications hub**, the core's, over a real WebSocket: device B
+  uploads, device A hears about it within seconds and pulls it, and B's own
+  change is not reported back to B (so `ContextId` is the
+  `deviceIdentifier` the plugin logs in with).
+- The first write-back into a login made by the official client asks first
+  (ADR 0016), and the first push to an organization item asks
+  (`organization-push`); the tests answer and the writes go through.
 
 Problems this phase found, all fixed:
 
@@ -752,10 +821,9 @@ Android. It has no Node.js. The plugin relies only on:
 
 | API | Used for | Notes |
 |---|---|---|
-| `crypto.subtle` (PBKDF2, HKDF via HMAC, AES-CBC, HMAC) | all crypto | secure context, which Obsidian provides |
-| `crypto.getRandomValues`, `crypto.randomUUID` | IVs, device id | `randomUUID`: iOS 15.4+, Chromium 92+ |
-| `WebAssembly` | Argon2id (`hash-wasm`) | 16–1024 MiB linear memory |
-| `crypto.subtle` AES-GCM, AES-CBC | XAES-256-GCM (one AES block = the first block of AES-CBC with a zero IV) | XChaCha20-Poly1305 is pure JavaScript (`@noble/ciphers`) |
+| `WebAssembly` | dybw-core (all Bitwarden cryptography but RSA-OAEP, the sync, the hub); Argon2id (`hash-wasm`) | the core module is compiled once per plugin load; Argon2 takes 16–1024 MiB linear memory |
+| `crypto.subtle` RSA-OAEP | organization keys (the core's `rsaOaepDecrypt` port) | secure context, which Obsidian provides |
+| `crypto.getRandomValues` | IVs, nonces, keys, device id (the core's `random` port) | |
 | `Worker`, `Blob`, `URL.createObjectURL` | Argon2id off the main thread | falls back to the main thread when unavailable |
 | `WebSocket` | live updates | the connection drops in the background on mobile; it is reopened on resume |
 | `TextEncoder`/`TextDecoder`, `atob`/`btoa` | encoding | no `Buffer` |
@@ -776,16 +844,29 @@ How this is enforced:
 ## 12. Performance
 
 These are the budgets (`test/perf/perf.test.ts`) and the timings measured on
-the development Mac:
+the development Mac at M6, on the core:
 
 | Operation | Budget | Node | WebKit | Chromium |
 |---|---|---|---|---|
-| PBKDF2-SHA256, 600,000 iterations | 3,000 ms | 45 ms | 85 ms | 43 ms |
-| Argon2id 64 MiB, t=3, p=4 | 5,000 ms | 111 ms | 109 ms | 121 ms |
-| Find and decrypt 1,000 marked secrets in a 5,000-item vault | 3,000 ms | 172 ms | 360 ms | 47 ms |
-| Plan 10,000 secrets | 500 ms | 2.6 ms | 2.0 ms | 2.8 ms |
-| First sync of 200 secrets (end to end) | 3,000 ms | 27 ms | 46 ms | 12 ms |
-| No-op sync of 200 secrets | 2,000 ms | 21 ms | 39 ms | 6 ms |
+| Load the core module: base64 decode, compile, instantiate | information | 10.6 ms | 4.0 ms | 3.6 ms |
+| PBKDF2-SHA256, 600,000 iterations, as a whole unlock in the core | 3,000 ms | 238 ms | 418 ms | 239 ms |
+| Argon2id 64 MiB, t=3, p=4 (the runner the core's port calls) | 5,000 ms | 109 ms | 109 ms | 105 ms |
+| Find and decrypt 1,000 marked secrets in a 5,000-item vault, as a first sync | 3,000 ms | 81 ms | 76 ms | 82 ms |
+| First sync of 200 secrets (end to end) | 3,000 ms | 7.8 ms | 8.0 ms | 7.5 ms |
+| No-op sync of 200 secrets | 2,000 ms | 7.8 ms | 9.0 ms | 7.4 ms |
+| Plan 10,000 secrets (dybw-core `runPerf`, the planner alone) | 500 ms | 5 ms in each engine (core harness, M6 Part A) | | |
+
+- **PBKDF2 runs in WASM on the main thread** (ruling D15 of M6): the
+  WebCrypto PBKDF2 the plugin used before took 45 / 85 / 43 ms
+  (Node / WebKit / Chromium); the core's takes about five times as long, and
+  the unlock freezes the UI for that time, about 0.4 s in WebKit here, more
+  on a phone. Routing PBKDF2 through a worker or WebCrypto is a possible
+  follow-up ADR if that is noticed on iOS. Argon2id still runs in a worker.
+- Loading the core (about 0.8 MiB of WASM, base64 in `main.js`) costs a few
+  milliseconds once per plugin load.
+- The sync rows include the fake server's answers; they are now cheaper
+  than before M6 (27 / 46 / 12 ms for the first sync of 200), since the core
+  decrypts in WASM rather than through WebCrypto's async calls.
 
 Phones are typically 3–10× slower than this machine, which still leaves
 every operation well inside its budget. Unlock time is dominated by the KDF
@@ -807,11 +888,16 @@ budgets catch order-of-magnitude regressions, not noise.
   not show up in Obsidian's settings search.
 - **Testing on devices**: testing inside the real Obsidian mobile apps is
   still manual. The Playwright engines are stand-ins.
+- **Vaultwarden and the newer encryption**: Vaultwarden 1.37.5 keeps no
+  signed security state, so the core refuses a COSE ("v2") account served by
+  it (ADR 0019), and it refuses blob items (ADR 0021). Accounts with legacy
+  keys are not affected.
 
 ## 14. Development guide
 
 ```sh
 npm install
+scripts/build-core.sh      # the pinned dybw-core into vendor/dybw-core (see the README for its toolchain)
 npm run lint               # eslint-plugin-obsidianmd
 npm run build              # typecheck (TypeScript 7) + production main.js with the embedded worker
 npm run check:bundle
