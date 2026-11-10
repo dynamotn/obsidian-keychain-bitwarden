@@ -4,6 +4,7 @@ import { argon2InThreadUpTo, argon2InWorker, IN_THREAD_MAX_MEMORY_KIB, type Argo
 import type { HttpClient } from "./bw/http";
 import { NotificationHub } from "./bw/notifications";
 import { coreLoader } from "./core/load";
+import { hostPorts, STATE_KEY, type HostPorts } from "./core/ports";
 import { SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SecretsController, type Status } from "./controller";
 import type { SecretStore, SyncReport } from "./sync/engine";
 import type { ConflictOverride, ConflictPolicy } from "./sync/plan";
@@ -11,7 +12,6 @@ import { parseDeviceState, type DeviceState } from "./sync/state";
 import { ConflictModal, PickScopeModal, PickSecretModal, summarize, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
-const STATE_KEY = "keychain-bitwarden:state";
 const SETTINGS_KEY = "keychain-bitwarden:settings";
 
 /** Generous: the worker keeps Obsidian responsive, the limit only stops a runaway derivation. */
@@ -48,11 +48,23 @@ export default class KeychainBitwardenPlugin extends Plugin {
   private lastReport: SyncReport | null = null;
   /** The dybw-core module; loaded at start, not used yet (M6 moves the vault and sync code onto it). */
   private readonly loadCore = coreLoader();
+  /** What the core runs on; not used yet (the controller moves onto it in M6). */
+  ports!: HostPorts;
 
   override async onload(): Promise<void> {
     this.loadCore().catch((e: unknown) => console.warn("[keychain-bitwarden] the dybw-core module did not load", e));
     this.settings = parseSettings(this.app.loadLocalStorage(SETTINGS_KEY));
     const storage = this.app.secretStorage;
+    const argon2 = this.argon2Runner();
+    this.ports = hostPorts({
+      requestUrl,
+      loadLocalStorage: (key) => this.app.loadLocalStorage(key) as unknown,
+      saveLocalStorage: (key, data) => this.app.saveLocalStorage(key, data),
+      secretStorage: storage,
+      createSocket: (url) => new WebSocket(url),
+      argon2,
+      crypto: window.crypto,
+    });
     const store: SecretStore = {
       get: (id) => storage.getSecret(id),
       set: (id, value) => storage.setSecret(id, value),
@@ -66,7 +78,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
       saveState: (s) => this.app.saveLocalStorage(STATE_KEY, s),
       vaultName: this.app.vault.getName(),
       deviceName: `Obsidian (${Platform.isMobile ? (Platform.isIosApp ? "iOS" : "Android") : "desktop"})`,
-      argon2: this.argon2Runner(),
+      argon2,
     });
 
     this.hub = new NotificationHub({
