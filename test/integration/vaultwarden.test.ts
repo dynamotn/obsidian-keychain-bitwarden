@@ -89,7 +89,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
   };
   const device = (vaultName = "notes") => deviceOf(account, { vaultName });
 
-  it("follows redirects only for a server acknowledged on the device (ADR 0018)", async () => {
+  it("sends credentials to a self-hosted server only once acknowledged, as with requestUrl (ADR 0018)", async () => {
     redirects.refused = false;
     try {
       const d = makeDevice(fetchHttpClient, account, { serverUrl: URL_! });
