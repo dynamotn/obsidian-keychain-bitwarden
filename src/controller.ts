@@ -227,6 +227,11 @@ export class SecretsController {
     for (const fn of this.listeners) fn(s, detail);
   }
 
+  /** Changes on every lock (and unload): a question asked before is no longer wanted. */
+  get lockGeneration(): number {
+    return this.generation;
+  }
+
   get isUnlocked(): boolean {
     return this.unlocked;
   }
@@ -458,7 +463,8 @@ export class SecretsController {
   /**
    * Runs a sync. A call made while one is running is queued behind it rather
    * than joined, so work queued in the meantime (uploads, conflict choices,
-   * answers) is not silently dropped.
+   * answers) is not silently dropped. `acceptRollback` accepts every rollback that sync meets: ADR 0019 allows one
+   * button per report.
    */
   sync(
     overrides?: ReadonlyMap<string, ConflictOverride>,

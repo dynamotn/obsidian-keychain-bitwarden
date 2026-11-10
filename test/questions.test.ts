@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STORAGE_PREFIX } from "../src/core/ports";
 import { KdfWeakenedError, OriginNotAcknowledgedError, SecurityDowngradeError, WrongPasswordError } from "../src/core/errors";
 import { isSelfHosted, summarize, type SyncReport } from "../src/controller";
-import { historyAnswers, rollbackQuestion, syncQuestion, unlockAsking, unlockQuestion, type UnlockQuestion } from "../src/questions";
+import { KdfAbortedError } from "../src/bw/argon2";
+import { acknowledgeToggle, historyAnswers, rollbackQuestion, syncQuestion, unlockAsking, unlockQuestion, type UnlockQuestion } from "../src/questions";
 import { FakeBitwardenServer } from "./helpers/fakeServer";
 import { makeDevice, type TestDevice } from "./helpers/device";
 
@@ -104,6 +105,102 @@ describe("the core's questions", () => {
     });
   });
 
+  describe("the settings toggle (ADR 0018)", () => {
+    /** A ToggleComponent whose setValue fires onChange, as Obsidian's may. */
+    const toggleOf = () => {
+      const view = {
+        value: false,
+        disabled: false,
+        onChange: (_: boolean): unknown => undefined,
+        setValue(on: boolean) {
+          view.value = on;
+          view.onChange(on);
+        },
+        setDisabled(off: boolean) {
+          view.disabled = off;
+        },
+      };
+      const toggle = acknowledgeToggle(a.controller, view);
+      view.onChange = (on) => toggle.change(on);
+      return { view, toggle };
+    };
+
+    it("shows the server in the URL field, and setting the value acts on nothing", async () => {
+      a.localStorage.delete(ACKNOWLEDGED);
+      await a.controller.acknowledgeOrigin("https://other.test");
+      const forget = vi.spyOn(a.controller, "forgetOrigin");
+      const acknowledge = vi.spyOn(a.controller, "acknowledgeOrigin");
+      const { view, toggle } = toggleOf();
+      a.settings.serverUrl = "https://other.test";
+      await toggle.refresh();
+      expect(view.value).toBe(true);
+      a.settings.serverUrl = "https://bw.test";
+      await toggle.refresh();
+      expect(view.value).toBe(false);
+      expect(forget).not.toHaveBeenCalled();
+      expect(acknowledge).not.toHaveBeenCalled();
+    });
+
+    it("drops a late answer for an older URL", async () => {
+      const { view, toggle } = toggleOf();
+      let answer!: (on: boolean) => void;
+      vi.spyOn(a.controller, "originAcknowledged")
+        .mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+        .mockResolvedValueOnce(false);
+      const old = toggle.refresh();
+      await toggle.refresh();
+      answer(true);
+      await old;
+      expect(view.value).toBe(false);
+    });
+
+    it("lets the user's choice win over a refresh still waiting", async () => {
+      a.localStorage.delete(ACKNOWLEDGED);
+      const { view, toggle } = toggleOf();
+      let answer!: (on: boolean) => void;
+      vi.spyOn(a.controller, "originAcknowledged").mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+      const pending = toggle.refresh();
+      await toggle.change(true);
+      answer(false);
+      await pending;
+      expect(view.value).toBe(false); // untouched by the stale refresh: the view keeps what the user clicked
+      expect(await a.controller.originAcknowledged()).toBe(true);
+    });
+
+    it("drops a late failure for an older URL", async () => {
+      const { view, toggle } = toggleOf();
+      let fail!: (e: Error) => void;
+      vi.spyOn(a.controller, "originAcknowledged")
+        .mockReturnValueOnce(new Promise((_, reject) => (fail = reject)))
+        .mockResolvedValueOnce(true);
+      const old = toggle.refresh();
+      await toggle.refresh();
+      fail(new Error("Invalid server URL"));
+      await old;
+      expect(view.disabled).toBe(false);
+      expect(view.value).toBe(true);
+    });
+
+    it("is disabled when the core cannot answer", async () => {
+      const { view, toggle } = toggleOf();
+      vi.spyOn(a.controller, "originAcknowledged").mockRejectedValueOnce(new Error("no core"));
+      await toggle.refresh();
+      expect(view.disabled).toBe(true);
+      await toggle.refresh();
+      expect(view.disabled).toBe(false);
+      expect(view.value).toBe(true);
+    });
+
+    it("puts the toggle back to what the core holds when the change failed", async () => {
+      const { view, toggle } = toggleOf();
+      await toggle.refresh();
+      vi.spyOn(a.controller, "forgetOrigin").mockRejectedValueOnce(new Error("storage failed"));
+      view.value = false;
+      await expect(toggle.change(false)).rejects.toThrow("storage failed");
+      expect(view.value).toBe(true);
+    });
+  });
+
   describe("weakened KDF (ADR 0017)", () => {
     it("shows the pinned and the offered settings, and accepting them retries the unlock", async () => {
       await a.controller.unlock(server.account.password);
@@ -163,6 +260,35 @@ describe("the core's questions", () => {
       await expect(unlockAsking(unlock, a.controller, async (q) => asked.push(q) > 0)).rejects.toBe(e);
       expect(unlock).toHaveBeenCalledTimes(2);
       expect(asked).toHaveLength(1);
+    });
+
+    it("drops the question when a lock came while it was open: nothing recorded, nothing retried", async () => {
+      a.localStorage.delete(ACKNOWLEDGED);
+      const unlock = vi.spyOn(a.controller, "unlock");
+      const run = unlockAsking(
+        () => a.controller.unlock(server.account.password),
+        a.controller,
+        async () => {
+          a.controller.lock();
+          return true;
+        },
+      );
+      await expect(run).rejects.toBeInstanceOf(KdfAbortedError);
+      expect(unlock).toHaveBeenCalledTimes(1);
+      expect(a.localStorage.has(ACKNOWLEDGED)).toBe(false);
+    });
+
+    it("does not retry when a lock came while the answer was recorded", async () => {
+      a.localStorage.delete(ACKNOWLEDGED);
+      const acknowledge = a.controller.acknowledgeOrigin.bind(a.controller);
+      vi.spyOn(a.controller, "acknowledgeOrigin").mockImplementation(async (origin) => {
+        a.controller.lock();
+        await acknowledge(origin);
+      });
+      const unlock = vi.spyOn(a.controller, "unlock");
+      await expect(unlockAnswering(a, true)).rejects.toBeInstanceOf(KdfAbortedError);
+      expect(unlock).toHaveBeenCalledTimes(1);
+      expect(a.controller.isUnlocked).toBe(false);
     });
 
     it("asks nothing for an error that is not a question", async () => {
@@ -236,6 +362,12 @@ describe("the core's questions", () => {
       [{ rollbacks: [{ id: "k" }], questions: [{ id: "j" }] }, "ask", "rollbacks"],
     ] as const)("%j with policy %s opens %s", (part, policy, expected) => {
       expect(syncQuestion({ ...emptyReport, ...part } as unknown as SyncReport, policy)).toBe(expected);
+    });
+
+    it("goes on to the next question in line once the rollback was declined", () => {
+      const report = { ...emptyReport, rollbacks: [{ id: "k" }], questions: [{ id: "j" }] } as unknown as SyncReport;
+      expect(syncQuestion(report, "ask", true)).toBe("history");
+      expect(syncQuestion({ ...report, questions: [] }, "ask", true)).toBeNull();
     });
   });
 

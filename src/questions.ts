@@ -1,6 +1,7 @@
 // The core's questions to the user (ADRs 0016-0019): which one an unlock error or a sync report asks, in what words,
 // and what the answer sends back. ui.ts only renders them.
 
+import { KdfAbortedError } from "./bw/argon2";
 import type { ConflictPolicy, HistoryAnswer, HistoryQuestion, SecretsController, SyncReport } from "./controller";
 import { KdfWeakenedError, OriginNotAcknowledgedError, SecurityDowngradeError, type Kdf } from "./core/errors";
 
@@ -77,21 +78,79 @@ export async function unlockAsking<T>(
   ask: (q: UnlockQuestion) => Promise<boolean>,
 ): Promise<T> {
   const asked = new Set<UnlockQuestion["kind"]>();
+  const generation = controller.lockGeneration;
+  // A lock or an unload while the question was open cancels the unlock: nothing is recorded, nothing retried.
+  const stillWanted = () => {
+    if (controller.lockGeneration !== generation) throw new KdfAbortedError();
+  };
   for (;;) {
     try {
       return await unlock();
     } catch (e) {
       const q = unlockQuestion(e, controller);
-      if (!q || asked.has(q.kind) || !(await ask(q))) throw e;
+      if (!q || asked.has(q.kind)) throw e;
+      const accepted = await ask(q);
+      stillWanted();
+      if (!accepted) throw e;
       asked.add(q.kind);
       await q.apply();
+      stillWanted();
     }
   }
 }
 
+/** The settings toggle as `acknowledgeToggle` drives it. */
+export interface ToggleView {
+  setValue(on: boolean): unknown;
+  setDisabled(disabled: boolean): unknown;
+}
+
+/**
+ * ADR 0018's settings toggle, kept on the server in the URL field: `refresh` after the URL changed (a late answer for
+ * an older URL is dropped), `change` from the toggle's onChange (ignored while `refresh` sets the value).
+ */
+export function acknowledgeToggle(controller: SecretsController, view: ToggleView) {
+  let seq = 0;
+  let refreshing = false;
+  const refresh = async () => {
+    const mine = ++seq;
+    let on: boolean;
+    try {
+      on = await controller.originAcknowledged();
+    } catch {
+      if (mine === seq) view.setDisabled(true);
+      return;
+    }
+    if (mine !== seq) return;
+    view.setDisabled(false);
+    refreshing = true;
+    try {
+      view.setValue(on);
+    } finally {
+      refreshing = false;
+    }
+  };
+  /** Rejects with the core's error after putting the toggle back to what the core holds. */
+  const change = async (on: boolean) => {
+    if (refreshing) return;
+    seq++; // The user's choice wins over a refresh still waiting.
+    try {
+      await (on ? controller.acknowledgeOrigin() : controller.forgetOrigin());
+    } catch (e) {
+      await refresh();
+      throw e;
+    }
+  };
+  return { refresh, change };
+}
+
 /** The modal a sync the user asked for opens: rollbacks first (accepting them changes the rest), then history, then conflicts. */
-export function syncQuestion(report: SyncReport, policy: ConflictPolicy): "rollbacks" | "history" | "conflicts" | null {
-  if (report.rollbacks.length) return "rollbacks";
+export function syncQuestion(
+  report: SyncReport,
+  policy: ConflictPolicy,
+  rollbackDeclined = false,
+): "rollbacks" | "history" | "conflicts" | null {
+  if (report.rollbacks.length && !rollbackDeclined) return "rollbacks";
   if (report.questions.length) return "history";
   if (report.conflicts.length && policy === "ask") return "conflicts";
   return null;

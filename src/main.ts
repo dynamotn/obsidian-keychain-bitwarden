@@ -15,7 +15,7 @@ import {
   type SyncReport,
   type UnlockSummary,
 } from "./controller";
-import { ORIGIN_NAME, ORIGIN_TEXT, rollbackQuestion, syncQuestion, unlockAsking } from "./questions";
+import { acknowledgeToggle, ORIGIN_NAME, ORIGIN_TEXT, rollbackQuestion, syncQuestion, unlockAsking } from "./questions";
 import { ask, ConflictModal, HistoryModal, PickScopeModal, PickSecretModal, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
@@ -217,17 +217,24 @@ export default class KeychainBitwardenPlugin extends Plugin {
       for (const s of report.skipped) console.debug("[keychain-bitwarden] skipped", s.cipherId, s.reason);
       for (const h of report.held) console.debug("[keychain-bitwarden] held", h.id, h.cipherId);
       for (const u of report.unknownFeatures) console.debug("[keychain-bitwarden] needs", u.cipherId, u.features.join(", "));
-      const question = verbose ? syncQuestion(report, this.settings.conflictPolicy) : null;
-      if (question === "conflicts") this.openConflicts();
-      else if (question === "history") new HistoryModal(this.app, report.questions, (a) => this.syncNow(true, undefined, a)).open();
-      // Not awaited: the dialog that asked for this sync (unlock, conflicts) closes meanwhile.
-      else if (question === "rollbacks") {
-        void ask(this.app, rollbackQuestion(report)).then((ok) => {
-          if (ok) void this.syncNow(true, undefined, undefined, true);
-        });
-      }
+      if (verbose) this.askAfterSync(report);
     } catch (e) {
       new Notice(`Bitwarden: ${(e as Error).message}`, 10_000);
+    }
+  }
+
+  /** Opens the modal the report asks for; a declined rollback goes on to the next question in line. */
+  private askAfterSync(report: SyncReport, rollbackDeclined = false): void {
+    const question = syncQuestion(report, this.settings.conflictPolicy, rollbackDeclined);
+    if (question === "conflicts") this.openConflicts();
+    else if (question === "history") new HistoryModal(this.app, report.questions, (a) => this.syncNow(true, undefined, a)).open();
+    // Not awaited: the dialog that asked for this sync (unlock, conflicts) closes meanwhile.
+    else if (question === "rollbacks") {
+      void ask(this.app, rollbackQuestion(report)).then((ok) => {
+        // Accepts every rollback of that sync at once: ADR 0019 allows one button per report.
+        if (ok) void this.syncNow(true, undefined, undefined, true);
+        else this.askAfterSync(report, true);
+      });
     }
   }
 
@@ -293,6 +300,7 @@ class SettingsTab extends PluginSettingTab {
             p.settings.serverUrl = v.trim();
             await p.saveSettings();
             acknowledged.settingEl.toggle(isSelfHosted(p.settings.serverUrl));
+            void originToggle.refresh();
           }),
       );
     new Setting(containerEl).setName("Email").addText((t) =>
@@ -330,22 +338,17 @@ class SettingsTab extends PluginSettingTab {
       SECRET_CLIENT_SECRET,
       "clientSecret",
     );
-    // ADR 0018: only a self-hosted server needs it; the toggle reads the core once it answers.
+    // ADR 0018: only a self-hosted server needs it; the toggle follows the server in the URL field.
+    let originToggle!: ReturnType<typeof acknowledgeToggle>;
     const acknowledged = new Setting(containerEl)
       .setName(ORIGIN_NAME)
       .setDesc(`${ORIGIN_TEXT} Turning it off locks Bitwarden.`)
       .addToggle((t) => {
-        p.controller.originAcknowledged().then(
-          (on) =>
-            t.setValue(on).onChange((v) => {
-              (v ? p.controller.acknowledgeOrigin() : p.controller.forgetOrigin()).catch((e: unknown) =>
-                new Notice(`Bitwarden: ${(e as Error).message}`),
-              );
-            }),
-          () => undefined,
-        );
+        originToggle = acknowledgeToggle(p.controller, t);
+        t.onChange((v) => originToggle.change(v).catch((e: unknown) => new Notice(`Bitwarden: ${(e as Error).message}`)));
       });
     acknowledged.settingEl.toggle(isSelfHosted(p.settings.serverUrl));
+    void originToggle.refresh();
 
     new Setting(containerEl).setName("Sync").setHeading();
     new Setting(containerEl)
