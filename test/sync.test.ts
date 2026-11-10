@@ -321,6 +321,15 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect(a.store.get("pw")).toBeNull();
     });
 
+    it("reads a blank or valueless obsidian:encoding as no encoding", async () => {
+      await server.addItem({ name: "blank", value: "b", extraFields: [["obsidian:encoding", " "]] });
+      const valueless = await server.addItem({ name: "valueless", value: "v", extraFields: [["obsidian:encoding", ""]] });
+      // Fields: obsidian:id, unrelated, obsidian:encoding.
+      valueless.fields![2]!.value = null;
+      expect((await a.controller.sync()).pulled.sort()).toEqual(["blank", "valueless"]);
+      expect(a.store.get("valueless")).toBe("v");
+    });
+
     describe("values too long for a field", () => {
       const long = "x".repeat(4_000); // over 5,000 encrypted characters
       const huge = "y".repeat(8_000); // over 10,000
