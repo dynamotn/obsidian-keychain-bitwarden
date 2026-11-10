@@ -16,6 +16,8 @@ import {
   type KeyAlgorithm,
 } from "../helpers/bw/crypto";
 import { fromBase64, toBase64 } from "../helpers/bw/encoding";
+import type { HttpClient } from "../helpers/bw/http";
+import { signedSecurityState } from "../helpers/bw/sign";
 
 export interface TestAccount {
   email: string;
@@ -27,6 +29,8 @@ export interface TestAccount {
   accessToken: string;
   userKey: SymmetricKey;
   publicKey: string;
+  /** A COSE account's signed security state (ADR 0019), as `accountKeys` carries it; none for legacy keys. */
+  signedState: Awaited<ReturnType<typeof signedSecurityState>> | null;
 }
 
 async function post(url: string, body: string, headers: Record<string, string>) {
@@ -41,6 +45,8 @@ export async function registerAccount(
   kdf: KdfParams = { type: KdfType.PBKDF2, iterations: 600_000 },
   /** A COSE algorithm makes an account on the newer ("v2") encryption. */
   userKeyAlgorithm: KeyAlgorithm = "aes256-cbc-hmac",
+  /** A COSE account's security state version: from 2 the core seals new items as blobs. */
+  securityVersion = 2,
 ): Promise<TestAccount> {
   const email = `it-${crypto.randomUUID().slice(0, 8)}@example.com`;
   const password = `pw ${crypto.randomUUID()} ✓`;
@@ -112,10 +118,29 @@ export async function registerAccount(
     accessToken: token.access_token,
     userKey,
     publicKey,
+    signedState: userKey.isCose ? await signedSecurityState(userKey, securityVersion) : null,
   };
 }
 
-async function api(account: TestAccount, serverUrl: string, method: string, path: string, body?: unknown) {
+/**
+ * `http` for `account`, with its signed security state in every `/api/sync`. Vaultwarden (1.37.5) has nowhere to
+ * keep a signature key pair or a security state: it answers both as null, and the core refuses a COSE account
+ * without them (ADR 0019). The state is made with the test crypto at registration, as a newer client would upload it.
+ */
+export function withSecurityState(http: HttpClient, account: TestAccount): HttpClient {
+  const state = account.signedState;
+  if (!state) return http;
+  return async (req) => {
+    const res = await http(req);
+    if (req.method !== "GET" || !new URL(req.url).pathname.endsWith("/api/sync") || res.status !== 200) return res;
+    const sync = JSON.parse(res.text) as { profile: { accountKeys: Record<string, unknown> } };
+    Object.assign(sync.profile.accountKeys, state);
+    return { ...res, text: JSON.stringify(sync) };
+  };
+}
+
+/** A call to the API as the account's web vault session. */
+export async function api(account: TestAccount, serverUrl: string, method: string, path: string, body?: unknown) {
   const res = await fetch(`${serverUrl}/api${path}`, {
     method,
     headers: { Authorization: `Bearer ${account.accessToken}`, "Content-Type": "application/json" },

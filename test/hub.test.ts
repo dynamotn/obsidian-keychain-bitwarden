@@ -286,6 +286,32 @@ describe("notifications hub client", () => {
     expect(sockets).toHaveLength(2);
   });
 
+  it("keeps one connection when woken twice in a row", async () => {
+    start();
+    const first = await connected();
+    d.controller.wake();
+    d.controller.wake();
+    const s = await connected(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toEqual([first, s]);
+    expect(first.closed).toBe(true);
+    expect(s.closed).toBe(false);
+    s.receive(invocation(0, "other-device"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(changes).toBe(1);
+  });
+
+  it("stays stopped when locked right after a wake", async () => {
+    start();
+    const first = await connected();
+    d.controller.wake();
+    d.controller.lock();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(first.closed).toBe(true);
+    expect(sockets.every((x) => x.closed)).toBe(true);
+    expect(changes).toBe(0);
+  });
+
   it("does not wake a hub that was stopped", async () => {
     start();
     await connected();

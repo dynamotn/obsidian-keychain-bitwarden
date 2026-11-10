@@ -8,19 +8,37 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { STORAGE_PREFIX, type SocketLike } from "../../src/core/ports";
 import { fetchHttpClient } from "../helpers/fetchHttp";
-import { KdfType } from "../../src/bw/crypto";
-import { NotificationHub, type SocketLike } from "../../src/bw/notifications";
-import { makeDevice, type TestDevice } from "../legacy/device";
+import { encryptString, KdfType } from "../helpers/bw/crypto";
+import { makeDevice, type TestDevice } from "../helpers/device";
 import {
+  api,
   createOrganization,
   createOrganizationNote,
   readOrganizationNote,
   registerAccount,
+  withSecurityState,
   type TestAccount,
 } from "./account";
 import { startTlsProxy, type TlsProxy } from "./tls-proxy";
+
+// The transport is fetch with `redirect: "error"`, so the host declares that it refuses redirects and the core sends
+// the API key to a self-hosted server without an acknowledgement (ADR 0018). One test runs as requestUrl does in
+// Obsidian instead: redirects followed (`refusesRedirects` false), the server acknowledged on the device.
+const redirects = vi.hoisted(() => ({ refused: true }));
+vi.mock("../../src/core/ports", async (importOriginal) => {
+  const ports = await importOriginal<typeof import("../../src/core/ports")>();
+  return {
+    ...ports,
+    hostPorts: (deps: Parameters<typeof ports.hostPorts>[0]) => ({
+      ...ports.hostPorts(deps),
+      refusesRedirects: () => redirects.refused,
+    }),
+  };
+});
+const ACKNOWLEDGED = `${STORAGE_PREFIX}acknowledged-origins`;
 
 const URL_ = process.env.BW_IT_URL;
 const hasRbw = (() => {
@@ -62,17 +80,36 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     }
   }, 120_000);
 
-  const device = async (vaultName = "notes") => {
-    const d = makeDevice(fetchHttpClient, account, { serverUrl: URL_!, vaultName });
-    await d.controller.unlock(account.password);
+  /** A device unlocked on `who`; nothing acknowledged, as the transport refuses redirects. */
+  const deviceOf = async (who: TestAccount, opts: Parameters<typeof makeDevice>[2] = {}, http = fetchHttpClient) => {
+    const d = makeDevice(withSecurityState(http, who), who, { serverUrl: URL_!, ...opts });
+    d.localStorage.delete(ACKNOWLEDGED);
+    await d.controller.unlock(who.password);
     return d;
   };
+  const device = (vaultName = "notes") => deviceOf(account, { vaultName });
+
+  it("follows redirects only for a server acknowledged on the device (ADR 0018)", async () => {
+    redirects.refused = false;
+    try {
+      const d = makeDevice(fetchHttpClient, account, { serverUrl: URL_! });
+      d.localStorage.delete(ACKNOWLEDGED);
+      await expect(d.controller.unlock(account.password)).rejects.toMatchObject({ code: "origin-not-acknowledged" });
+      await d.controller.acknowledgeOrigin();
+      await d.controller.unlock(account.password);
+      d.store.set("acknowledged-key", "through requestUrl's rules");
+      await d.controller.queueUpload("acknowledged-key", { kind: "global" });
+      expect((await d.controller.sync()).created).toEqual(["acknowledged-key"]);
+    } finally {
+      redirects.refused = true;
+    }
+  });
 
   it("uploads from one device and delivers to another", async () => {
     const a = await device();
     const b = await device();
     a.store.set("openai-api-key", "sk-live-1\nsecond line");
-    a.controller.queueUpload("openai-api-key", { kind: "global" });
+    await a.controller.queueUpload("openai-api-key", { kind: "global" });
     expect((await a.controller.sync()).created).toEqual(["openai-api-key"]);
     expect((await b.controller.sync()).pulled).toContain("openai-api-key");
     expect(b.store.get("openai-api-key")).toBe("sk-live-1\nsecond line");
@@ -82,7 +119,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     const a = await device();
     const b = await device();
     a.store.set("race-key", "v1");
-    a.controller.queueUpload("race-key", { kind: "global" });
+    await a.controller.queueUpload("race-key", { kind: "global" });
     await a.controller.sync();
     await b.controller.sync();
 
@@ -99,11 +136,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
   it("syncs an organization item both ways, keeping it in its organization", async () => {
     const org = await createOrganization(URL_!, account);
     const cipherId = await createOrganizationNote(URL_!, account, org, "team-token", "from the team");
-    const d = makeDevice(fetchHttpClient, account, {
-      serverUrl: URL_!,
-      settings: { syncOrganizations: true },
-    });
-    await d.controller.unlock(account.password);
+    const d = await deviceOf(account, { settings: { syncOrganizations: true } });
     const first = await d.controller.sync();
     expect(first.errors).toEqual([]);
     // The account is shared with the other tests, whose secrets are pulled too.
@@ -111,7 +144,9 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     expect(d.store.get("team-token")).toBe("from the team");
 
     d.store.set("team-token", "edited in Obsidian");
-    const second = await d.controller.sync();
+    // The first push to an organization item asks (M6: the core's organization-push conflict).
+    expect((await d.controller.sync()).conflicts).toContainEqual(expect.objectContaining({ id: "team-token", kind: "organization-push" }));
+    const second = await d.controller.sync(new Map([["team-token", { policy: "prefer-local", kind: "organization-push" }]]));
     expect(second.errors).toEqual([]);
     expect(second.pushed).toEqual(["team-token"]);
     expect(await readOrganizationNote(URL_!, account, org, cipherId)).toEqual({
@@ -121,31 +156,27 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
   });
 
   it("hears about a change made on another device through the notifications hub", async () => {
-    const a = await device();
-    const b = await device();
     const heard: string[] = [];
-    const hubFor = (name: string, d: TestDevice) =>
-      new NotificationHub({
-        url: () => d.controller.notificationsHubUrl(),
-        createSocket: (u) => new WebSocket(u) as unknown as SocketLike,
-        deviceId: () => d.controller.deviceId(),
-        onChange: () => heard.push(name),
-        timers: { set: (fn, ms) => setTimeout(fn, ms) as unknown as number, clear: (id) => clearTimeout(id) },
-        settleMs: 100,
-        minIntervalMs: 0,
-      });
+    let open = 0;
+    // The core's hub on the plugin's socket port, over a real WebSocket.
+    const createSocket = (u: string) => {
+      const ws = new WebSocket(u);
+      ws.addEventListener("open", () => open++);
+      return ws as unknown as SocketLike;
+    };
+    const a = await deviceOf(account, { createSocket });
+    const b = await deviceOf(account, { createSocket });
     const until = async (cond: () => boolean, what: string) => {
       for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 50));
       if (!cond()) throw new Error(`timed out waiting for ${what}`);
     };
-    const hubA = hubFor("a", a);
-    const hubB = hubFor("b", b);
+    const hubs = [a.controller.startHub(() => heard.push("a")), b.controller.startHub(() => heard.push("b"))];
     try {
-      hubA.start();
-      hubB.start();
-      await until(() => hubA.connected && hubB.connected, "both hubs to connect");
+      await until(() => open === 2, "both hubs to connect");
+      // The handshake follows the open.
+      await new Promise((r) => setTimeout(r, 500));
       b.store.set("live-key", "pushed live");
-      b.controller.queueUpload("live-key", { kind: "global" });
+      await b.controller.queueUpload("live-key", { kind: "global" });
       await b.controller.sync();
       await until(() => heard.includes("a"), "device A to hear about the change");
       // Give B's hub the same time: its own change must not come back to it.
@@ -153,22 +184,19 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       expect(heard.filter((h) => h === "b")).toEqual([]);
       expect((await a.controller.sync()).pulled).toContain("live-key");
     } finally {
-      hubA.stop();
-      hubB.stop();
+      a.controller.stopHub();
+      b.controller.stopHub();
+      await Promise.all(hubs);
     }
   });
 
+  // Security state version 1: new items are written field by field, which Vaultwarden takes (see the blob test below).
   it.each(["xaes256gcm", "xchacha20poly1305"] as const)("syncs an account on the newer %s encryption", async (alg) => {
-    const v2 = await registerAccount(URL_!, { type: KdfType.PBKDF2, iterations: 600_000 }, alg);
-    const deviceOf = async () => {
-      const d = makeDevice(fetchHttpClient, v2, { serverUrl: URL_! });
-      await d.controller.unlock(v2.password);
-      return d;
-    };
-    const a = await deviceOf();
-    const b = await deviceOf();
+    const v2 = await registerAccount(URL_!, { type: KdfType.PBKDF2, iterations: 600_000 }, alg, 1);
+    const a = await deviceOf(v2);
+    const b = await deviceOf(v2);
     a.store.set("v2-key", "written as COSE");
-    a.controller.queueUpload("v2-key", { kind: "global" });
+    await a.controller.queueUpload("v2-key", { kind: "global" });
     expect((await a.controller.sync()).created).toEqual(["v2-key"]);
     expect((await b.controller.sync()).pulled).toEqual(["v2-key"]);
     expect(b.store.get("v2-key")).toBe("written as COSE");
@@ -189,18 +217,78 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
 
   it("works with an Argon2id account", async () => {
     const argon = await registerAccount(URL_!, { type: KdfType.Argon2id, iterations: 3, memory: 64, parallelism: 4 });
-    const d = makeDevice(fetchHttpClient, argon, { serverUrl: URL_! });
-    await d.controller.unlock(argon.password);
+    const d = await deviceOf(argon);
     d.store.set("argon-key", "a");
-    d.controller.queueUpload("argon-key", { kind: "global" });
+    await d.controller.queueUpload("argon-key", { kind: "global" });
     expect((await d.controller.sync()).created).toEqual(["argon-key"]);
+  });
+
+  // Two answers only a real server gives (M6 Task 9 review). No bitwarden.com account is at hand: Vaultwarden
+  // answers here, and both answers are refusals the core has to handle (dybw-core follow-ups, not plugin patches).
+  it("pushes to an item the server sends without its secure note part: Vaultwarden refuses the push", async () => {
+    const enc = (s: string) => encryptString(s, account.userKey);
+    // Vaultwarden does not store a secure note without its part ("Data missing"): the item is made whole, and the
+    // device is shown it without the part, as a server that drops it would.
+    const created = (await api(account, URL_!, "POST", "/ciphers", {
+      type: 2,
+      folderId: null,
+      organizationId: null,
+      favorite: false,
+      reprompt: 0,
+      secureNote: { type: 0 },
+      name: await enc("bare note"),
+      notes: await enc("first"),
+      fields: [{ type: 0, name: await enc("obsidian:id"), value: await enc("bare-note") }],
+      encryptedFor: account.userId,
+    })) as { id: string };
+    const sent: unknown[] = [];
+    const bare: typeof fetchHttpClient = async (req) => {
+      if (req.method === "PUT" && req.url.includes(created.id)) sent.push((JSON.parse(req.body!) as { secureNote?: unknown }).secureNote);
+      const res = await fetchHttpClient(req);
+      if (!res.text.includes(created.id)) return res;
+      const body = JSON.parse(res.text) as { ciphers?: { id: string; secureNote?: unknown }[] };
+      for (const c of body.ciphers ?? []) if (c.id === created.id) c.secureNote = null;
+      return { ...res, text: JSON.stringify(body) };
+    };
+    const a = await deviceOf(account, {}, bare);
+    expect((await a.controller.sync()).pulled).toContain("bare-note");
+    a.store.set("bare-note", "second");
+    const r = await a.controller.sync();
+    // The core sends the part as it got it (null); Vaultwarden answers 400. Nothing is lost: the value stays here,
+    // the item stays as it was.
+    expect(sent).toEqual([null]);
+    expect(r.pushed).toEqual([]);
+    expect(r.errors).toEqual([{ id: "bare-note", error: expect.stringMatching(/^HTTP 400 .*Data missing/) }]);
+    expect(a.store.get("bare-note")).toBe("second");
+    expect(await api(account, URL_!, "GET", `/ciphers/${created.id}`)).toMatchObject({ secureNote: { type: 0 } });
+  });
+
+  it("writes a new item of a COSE account at security version 2 as a blob: Vaultwarden refuses it at any size", async () => {
+    const v2 = await registerAccount(URL_!, { type: KdfType.PBKDF2, iterations: 600_000 }, "xchacha20poly1305");
+    const writes: [string, number][] = [];
+    const a = await deviceOf(v2, {}, async (req) => {
+      const res = await fetchHttpClient(req);
+      if (req.method === "POST" && req.url.endsWith("/api/ciphers")) writes.push([JSON.parse(req.body!).data ? "blob" : "fields", res.status]);
+      return res;
+    });
+    // Short, then as long as the notes take; past that the core refuses before sending anything.
+    for (const [size, error] of [[10, "HTTP 422"], [9_900, "HTTP 422"], [10_001, "the value is too long for a Bitwarden item"]] as const) {
+      a.store.set(`big-key-${size}`, "x".repeat(size));
+      await a.controller.queueUpload(`big-key-${size}`, { kind: "global" });
+      const r = await a.controller.sync();
+      expect(r.created).toEqual([]);
+      expect(r.errors).toContainEqual({ id: `big-key-${size}`, error });
+    }
+    expect(writes.every(([shape, status]) => shape === "blob" && status === 422)).toBe(true);
+    // Still queued: the next sync tries again.
+    expect(await a.controller.uploadCandidates()).toEqual([]);
   });
 
   describe.skipIf(!hasRbw)("interoperability with rbw (reader)", () => {
     it("rbw reads what the plugin wrote", async () => {
       const a = await device();
       a.store.set("from-plugin", "plugin value ✓");
-      a.controller.queueUpload("from-plugin", { kind: "global" });
+      await a.controller.queueUpload("from-plugin", { kind: "global" });
       await a.controller.sync();
       rbw(["sync"]);
       // rbw's agent loads organization keys only when it unlocks; earlier tests
@@ -240,7 +328,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       // Make sure the folder exists (the plugin creates it on first upload).
       const a = await device();
       a.store.set("seed", "s");
-      a.controller.queueUpload("seed", { kind: "global" });
+      await a.controller.queueUpload("seed", { kind: "global" });
       await a.controller.sync();
       await bw(["sync"]);
     }, 120_000);
@@ -268,7 +356,10 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       expect(a.store.get("github-token")).toBe("ghp_original");
 
       a.store.set("github-token", "ghp_rotated");
-      expect((await a.controller.sync()).pushed).toEqual(["github-token"]);
+      // ADR 0016: the first write-back into a login's own password asks first.
+      expect((await a.controller.sync()).questions).toEqual([expect.objectContaining({ id: "github-token", question: "first-write-back" })]);
+      const answer = { question: "first-write-back", answer: "write-to-login" } as const;
+      expect((await a.controller.sync(undefined, new Map([["github-token", answer]]))).pushed).toEqual(["github-token"]);
 
       await bw(["sync"]);
       const after = JSON.parse(await bw(["get", "item", created.id]));
@@ -310,7 +401,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     it("the official client can read and edit what the plugin wrote", async () => {
       const a = await device();
       a.store.set("plugin-note", "line 1\nline 2");
-      a.controller.queueUpload("plugin-note", { kind: "vault", name: "notes" });
+      await a.controller.queueUpload("plugin-note", { kind: "vault", name: "notes" });
       await a.controller.sync();
       await bw(["sync"]);
       const item = (JSON.parse(await bw(["list", "items", "--search", "plugin-note"])) as Record<string, any>[])[0]!;
@@ -330,7 +421,7 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
       const long = "-----BEGIN KEY-----\n" + "k".repeat(4_000) + "\n-----END KEY-----";
       const a = await device();
       a.store.set("long-key", long);
-      a.controller.queueUpload("long-key", { kind: "global" });
+      await a.controller.queueUpload("long-key", { kind: "global" });
       expect((await a.controller.sync()).errors).toEqual([]);
       await bw(["sync"]);
       const item = (JSON.parse(await bw(["list", "items", "--search", "long-key"])) as Record<string, any>[])[0]!;
