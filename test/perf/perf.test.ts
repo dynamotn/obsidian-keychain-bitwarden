@@ -4,12 +4,12 @@
 // Budgets are deliberately loose: they catch order-of-magnitude regressions,
 // not noise. Timings are printed so they can be recorded in docs/.
 
+// plan-10000 (the planner alone) moved to dybw-core's `runPerf`, with the same budget (docs/m6-test-map.md).
+
 import { describe, expect, it, type TaskMeta } from "vitest";
-import { deriveMasterKey, encryptString, KdfType, SymmetricKey } from "../../src/bw/crypto";
-import { readVault } from "../../src/bw/vault";
-import type { CipherDto, SyncDto } from "../../src/bw/api";
-import { planSync, type BaseEntry, type RemoteEntry } from "../../src/sync/plan";
+import { argon2InThread } from "../../src/bw/argon2";
 import { coreLoader } from "../../src/core/load";
+import { encryptString, KdfType } from "../helpers/bw/crypto";
 import { FakeBitwardenServer } from "../helpers/fakeServer";
 import { makeDevice } from "../helpers/device";
 
@@ -44,63 +44,42 @@ describe("performance", () => {
     task.meta.perf = [...(task.meta.perf ?? []), `[perf:${label}] core-load: ${ms.toFixed(1)} ms (information)`];
   });
 
-  it("PBKDF2-SHA256, 600,000 iterations (Bitwarden default)", async ({ task }) => {
-    await time(task, "pbkdf2-600k", () => deriveMasterKey("pw", "a@b.c", { type: KdfType.PBKDF2, iterations: 600_000 }), 3_000);
+  it("PBKDF2-SHA256, 600,000 iterations (Bitwarden default), as an unlock in the core", async ({ task }) => {
+    const server = await FakeBitwardenServer.create({ type: KdfType.PBKDF2, iterations: 600_000 });
+    const d = makeDevice(server.http, server.account);
+    await time(task, "pbkdf2-600k", () => d.controller.unlock(server.account.password), 3_000);
   });
 
   it("Argon2id, 64 MiB / 3 iterations / 4 lanes (Bitwarden default)", async ({ task }) => {
-    await time(
-      task,
-      "argon2id-64m-t3-p4",
-      () => deriveMasterKey("pw", "a@b.c", { type: KdfType.Argon2id, iterations: 3, memory: 64, parallelism: 4 }),
-      5_000,
-    );
+    const input = { password: new Uint8Array(8), salt: new Uint8Array(32), iterations: 3, memoryKiB: 64 * 1024, parallelism: 4 };
+    await time(task, "argon2id-64m-t3-p4", () => argon2InThread(input), 5_000);
   });
 
-  it("decrypts 1,000 marked secrets inside a 5,000-item vault", async ({ task }) => {
-    const key = await SymmetricKey.generate();
+  it("decrypts 1,000 marked secrets inside a 5,000-item vault, as a first sync", async ({ task }) => {
+    const server = await FakeBitwardenServer.create();
+    const key = server.account.userKey;
     const value = await encryptString("sk-".padEnd(64, "x"), key);
     const name = await encryptString("secret-name", key);
+    const marker = await encryptString("obsidian:id", key);
     // Unmarked items still carry fields: their names must be decrypted to find the marker.
-    const marked = [{ type: 0, name: await encryptString("obsidian:id", key), value: await encryptString("secret-name", key) }];
     const other = [{ type: 0, name: await encryptString("username", key), value: await encryptString("me", key) }];
-    const ciphers: CipherDto[] = Array.from({ length: 5_000 }, (_, i) => ({
-      id: `c${i}`,
-      type: 2,
-      folderId: null,
-      organizationId: null,
-      name,
-      notes: value,
-      fields: i < 1_000 ? marked : other,
-      revisionDate: "2026-01-01T00:00:00Z",
-    }));
-    const sync: SyncDto = { profile: { id: "u", email: "e", key: "" }, folders: [], ciphers };
-    const { records } = await time(task, "decrypt-1000-of-5000", () => readVault(sync, key), 3_000);
-    expect(records).toHaveLength(1_000);
-  });
-
-  it("plans a 10,000-secret sync", async ({ task }) => {
-    const remote = new Map<string, RemoteEntry>();
-    const base = new Map<string, BaseEntry>();
-    for (let i = 0; i < 10_000; i++) {
-      const id = `secret-${i}`;
-      remote.set(id, { id, cipherId: `c${i}`, revisionDate: i % 3 ? "2" : "1", fingerprint: `r${i % 5}` });
-      base.set(id, { cipherId: `c${i}`, revisionDate: "1", fingerprint: "r0" });
+    for (let i = 0; i < 5_000; i++) {
+      server.ciphers.push({
+        id: `c${i}`,
+        type: 2,
+        folderId: null,
+        organizationId: null,
+        name,
+        notes: value,
+        fields: i < 1_000 ? [{ type: 0, name: marker, value: await encryptString(`secret-${i}`, key) }] : other,
+        secureNote: { type: 0 },
+        revisionDate: "2026-01-01T00:00:00Z",
+      });
     }
-    const actions = await time(
-      task,
-      "plan-10000",
-      () =>
-        planSync({
-          remote,
-          base,
-          local: (id) => ({ fingerprint: id.endsWith("7") ? "edited" : "r0" }),
-          pendingCreates: new Set(),
-          policy: "ask",
-        }),
-      500,
-    );
-    expect(actions.length).toBeGreaterThan(0);
+    const d = makeDevice(server.http, server.account);
+    await d.controller.unlock(server.account.password);
+    const report = await time(task, "decrypt-1000-of-5000", () => d.controller.sync(), 3_000);
+    expect(report.pulled).toHaveLength(1_000);
   });
 
   it("first sync of 200 secrets end to end, then a no-op sync", async ({ task }) => {
