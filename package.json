@@ -42,6 +42,10 @@
   "overrides": {
     "eslint-plugin-obsidianmd": {
       "obsidian": "$obsidian"
-    }
+    },
+    "node-forge": "^1.4.3",
+    "multer": "^2.5.0",
+    "tmp": "^0.2.7",
+    "minimatch@>=7.0.0 <11.0.1": "^11.0.6"
   }
 }
