@@ -157,6 +157,12 @@ function identityOrigin(serverUrl: string): string {
   return url.origin;
 }
 
+/** Whether a sync the user did not ask for is worth a notice: it changed something, or the core has something to say. */
+export function needsNotice(report: SyncReport): boolean {
+  const changed = report.pulled.length + report.pushed.length + report.created.length + report.cleared.length;
+  return changed + report.conflicts.length + report.errors.length + report.warnings.length > 0;
+}
+
 const scopeText = (scope: Scope) => (scope.kind === "vault" ? `vault:${scope.name}` : scope.kind);
 
 export class SecretsController {
@@ -243,6 +249,7 @@ export class SecretsController {
 
   /** `fn` once every earlier key-taking call ended. */
   private serial<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.trapped) return Promise.reject(new Error(TRAP_MESSAGE));
     const run = this.tail.then(fn);
     this.tail = run.catch(() => undefined);
     return run;
@@ -260,6 +267,10 @@ export class SecretsController {
     } catch {
       // A trapped instance may trap again; nothing more can be done here.
     }
+    // Never called into again (lock, cancel, unload), and work waiting on a call that will never settle is dropped.
+    this.session = null;
+    this.tail = Promise.resolve();
+    this.running = this.queued = null;
     this.unlocked = false;
     this.unlocking?.abort();
     this.hub?.abort();
@@ -363,16 +374,15 @@ export class SecretsController {
    * Unlocks from a key remembered on this device, if the user opted in. Returns false when there is none, or when
    * the core cannot use it (stale after a key rotation, malformed): it is then forgotten and the password asked for.
    */
-  async unlockFromRememberedKey(): Promise<boolean> {
+  async unlockFromRememberedKey(): Promise<UnlockSummary | null> {
     const stored = this.deps.store.get(SECRET_USER_KEY);
-    if (!stored || !this.deps.settings().rememberKey) return false;
+    if (!stored || !this.deps.settings().rememberKey) return null;
     try {
-      await this.open((session, profile, clientSecret) => session.unlockWithKey(profile, clientSecret, stored));
-      return true;
+      return await this.open((session, profile, clientSecret) => session.unlockWithKey(profile, clientSecret, stored));
     } catch (e) {
       if (!(e instanceof InvalidError || e instanceof WrongPasswordError)) throw e;
       this.forgetRememberedKey();
-      return false;
+      return null;
     }
   }
 
@@ -395,7 +405,7 @@ export class SecretsController {
    * answers) is not silently dropped.
    */
   sync(overrides?: ReadonlyMap<string, ConflictOverride>, answers?: ReadonlyMap<string, HistoryAnswer>): Promise<SyncReport> {
-    if (!this.running) {
+    if (!this.running || this.trapped) {
       this.running = this.serial(() => this.doSync(overrides, answers)).finally(() => {
         this.running = null;
       });
@@ -456,6 +466,7 @@ export class SecretsController {
       // Locking stops a running sync; that is not an error to show.
       if (generation !== this.generation) throw new LockedError("locked", "Bitwarden was locked during the sync");
       // A value typed during the sync stopped it after it saved what it did: once more, and the edit is seen.
+      // shortcut: the first run's report is lost (the core rejected); what it pulled or pushed is not in the notice.
       if (this.moved && !retried) return await this.doSync(overrides, answers, true);
       if (this.unlocked) this.setStatus("error", (e as Error).message);
       throw e;

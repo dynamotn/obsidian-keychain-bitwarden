@@ -30,6 +30,6 @@ describe.each(ACCOUNT_KINDS)("the newer sync response, %s account key", (userKey
     await d.controller.unlock(server.account.password);
     expect((await d.controller.sync()).pulled).toEqual(["team"]);
     d.controller.lock();
-    expect(await d.controller.unlockFromRememberedKey()).toBe(true);
+    expect(await d.controller.unlockFromRememberedKey()).not.toBeNull();
   });
 });

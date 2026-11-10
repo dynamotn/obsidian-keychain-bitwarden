@@ -4,6 +4,7 @@ import { argon2InThreadUpTo, argon2InWorker, IN_THREAD_MAX_MEMORY_KIB, type Argo
 import {
   SECRET_CLIENT_ID,
   SECRET_CLIENT_SECRET,
+  needsNotice,
   SecretsController,
   type ConflictOverride,
   type ConflictPolicy,
@@ -58,7 +59,9 @@ export default class KeychainBitwardenPlugin extends Plugin {
       deviceName: `Obsidian (${Platform.isMobile ? (Platform.isIosApp ? "iOS" : "Android") : "desktop"})`,
       onTrap: (message) => new Notice(message, 0),
     });
-    // A trap can surface outside a call the controller awaits (a future polled from a microtask).
+    // A trap can surface outside a call the controller awaits (a future polled from a microtask). These hooks react to
+    // any WebAssembly.RuntimeError, also another plugin's: the stack cannot reliably tell whose. That fails safe: at
+    // worst Bitwarden locks and asks for a reload.
     const trapped = (e: unknown) => {
       if (e instanceof WebAssembly.RuntimeError) this.controller.trap();
     };
@@ -148,7 +151,10 @@ export default class KeychainBitwardenPlugin extends Plugin {
   private async startup(): Promise<void> {
     if (!this.settings.email || !this.settings.rememberKey) return;
     try {
-      if (await this.controller.unlockFromRememberedKey()) await this.syncNow(false);
+      const summary = await this.controller.unlockFromRememberedKey();
+      if (!summary) return;
+      this.showUnlockSummary(summary);
+      await this.syncNow(false);
     } catch (e) {
       new Notice(`Bitwarden: ${(e as Error).message}`);
     }
@@ -190,8 +196,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
     try {
       const report = await this.controller.sync(overrides);
       this.lastReport = report;
-      const changed = report.pulled.length + report.pushed.length + report.created.length + report.cleared.length;
-      if (verbose || changed || report.conflicts.length || report.errors.length) {
+      if (verbose || needsNotice(report)) {
         new Notice(`Bitwarden: ${summarize(report)}`);
       }
       for (const err of report.errors) console.warn("[keychain-bitwarden]", `${err.id}: ${err.error}`);

@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WasmSession } from "../vendor/dybw-core/dybw_core_wasm.js";
 import { argon2InThread, KdfAbortedError } from "../src/bw/argon2";
 import {
+  needsNotice,
   SECRET_API_ORIGIN,
   SECRET_CLIENT_SECRET,
   SECRET_USER_KEY,
   TRAP_MESSAGE,
   type Status,
 } from "../src/controller";
-import { ApiError, LockedError, OriginNotAcknowledgedError } from "../src/core/errors";
+import { ApiError, LockedError, OriginNotAcknowledgedError, PortError } from "../src/core/errors";
 import { STORAGE_PREFIX, type SocketLike } from "../src/core/ports";
 import { KdfType } from "./helpers/bw/crypto";
 import type { HttpClient, HttpRequest } from "./helpers/bw/http";
@@ -184,7 +185,7 @@ describe("SecretsController", () => {
     it("is not used when there is none", async () => {
       const d = makeDevice(server.http, server.account, { settings: { rememberKey: true } });
       server.requests = [];
-      expect(await d.controller.unlockFromRememberedKey()).toBe(false);
+      expect(await d.controller.unlockFromRememberedKey()).toBeNull();
       expect(server.requests).toHaveLength(0);
       expect(d.controller.isUnlocked).toBe(false);
       expect(d.store.get(SECRET_USER_KEY)).toBeNull();
@@ -193,7 +194,7 @@ describe("SecretsController", () => {
     it("is not used once remembering is turned off", async () => {
       const d = await remembering();
       d.settings.rememberKey = false;
-      expect(await d.controller.unlockFromRememberedKey()).toBe(false);
+      expect(await d.controller.unlockFromRememberedKey()).toBeNull();
       expect(server.requests).toHaveLength(0);
       expect(d.controller.isUnlocked).toBe(false);
     });
@@ -204,10 +205,19 @@ describe("SecretsController", () => {
     ])("is dropped when it is %s", async (_label, stored) => {
       const d = await remembering();
       d.store.set(SECRET_USER_KEY, stored);
-      expect(await d.controller.unlockFromRememberedKey()).toBe(false);
+      expect(await d.controller.unlockFromRememberedKey()).toBeNull();
       expect(d.store.get(SECRET_USER_KEY)).toBe("");
       expect(server.requests).toHaveLength(0);
       expect(d.controller.isUnlocked).toBe(false);
+    });
+
+    it("answers the unlock summary, with the organizations it could not read", async () => {
+      const broken = await server.addOrganization({ key: "4.AAAA" });
+      const d = await remembering();
+      d.settings.syncOrganizations = true;
+      const summary = await d.controller.unlockFromRememberedKey();
+      expect(summary?.orgProblems.map((p) => p.organization)).toEqual([broken]);
+      expect(d.controller.isUnlocked).toBe(true);
     });
 
     it("is kept when the server cannot be reached, for the next try", async () => {
@@ -258,6 +268,43 @@ describe("SecretsController", () => {
       expect(r3).toBe(r2);
       expect(r2.pushed).toEqual(["site"]);
       expect(server.ciphers.find((c) => c.id === login.id)!.revisionDate).not.toBe(login.revisionDate);
+    });
+
+    it("syncs once more after a value typed during the sync, and only once", async () => {
+      const first = await server.addItem({ name: "a-first", value: "1" });
+      const second = await server.addItem({ name: "b-second", value: "1" });
+      a.settings.conflictPolicy = "prefer-remote";
+      await a.controller.sync();
+      const base = a.state().base["b-second"];
+      a.store.set("a-first", "pushed");
+      await server.editValue(second.id, "remote");
+      // On every push the user types again: into the secret being pushed, and into the one being pulled.
+      let typed = 0;
+      server.beforeUpdate = (id) => {
+        // Bounded here only so that a controller retrying without end fails this test instead of hanging it.
+        if (id !== first.id || typed === 3) return;
+        typed++;
+        a.store.set("a-first", `pushed ${typed}`);
+        a.store.set("b-second", `typed ${typed}`);
+      };
+      const runSync = vi.spyOn(WasmSession.prototype, "runSync");
+      await expect(a.controller.sync()).rejects.toBeInstanceOf(PortError);
+      expect(runSync).toHaveBeenCalledTimes(2);
+      expect(a.store.get("b-second")).toBe("typed 2");
+      expect(a.state().base["b-second"]).toEqual(base);
+    });
+
+    it("never writes over a secret created during the sync with the id of one it pulls", async () => {
+      const first = await server.addItem({ name: "a-first", value: "1" });
+      await a.controller.sync();
+      await server.addItem({ name: "fresh", value: "remote" });
+      a.store.set("a-first", "pushed");
+      server.beforeUpdate = (id) => {
+        if (id === first.id) a.store.set("fresh", "mine");
+      };
+      const r = await a.controller.sync();
+      expect(a.store.get("fresh")).toBe("mine");
+      expect(r.conflicts.map((c) => [c.id, c.kind])).toEqual([["fresh", "local-unsynced"]]);
     });
 
     it("still runs a queued sync when the running one fails", async () => {
@@ -408,6 +455,25 @@ describe("SecretsController", () => {
       expect(server.requests).toHaveLength(0);
     });
 
+    it("never calls the trapped instance again, and refuses queued work instead of waiting", async () => {
+      const d = makeDevice(server.http, server.account);
+      await d.controller.unlock(server.account.password);
+      // A trap inside a polled future: its promise never settles, the plugin hears of it from the window.
+      vi.spyOn(WasmSession.prototype, "runSync").mockReturnValue(new Promise<string>(() => undefined));
+      const stuck = d.controller.sync();
+      const queued = d.controller.sync();
+      d.controller.trap();
+      const lock = vi.spyOn(WasmSession.prototype, "lock");
+      await expect(d.controller.sync()).rejects.toThrow(TRAP_MESSAGE);
+      await expect(d.controller.resetState()).rejects.toThrow(TRAP_MESSAGE);
+      await expect(d.controller.uploadCandidates()).rejects.toThrow(TRAP_MESSAGE);
+      d.controller.cancelUnlock();
+      d.controller.lock();
+      expect(lock).not.toHaveBeenCalled();
+      void stuck.catch(() => undefined);
+      void queued.catch(() => undefined);
+    });
+
     it("is also caught from a synchronous call", async () => {
       const d = makeDevice(server.http, server.account);
       await d.controller.unlock(server.account.password);
@@ -416,6 +482,19 @@ describe("SecretsController", () => {
       });
       await expect(d.controller.uploadCandidates()).rejects.toThrow(TRAP_MESSAGE);
       expect(d.controller.isUnlocked).toBe(false);
+    });
+  });
+
+  describe("needsNotice", () => {
+    const empty = { pulled: [], pushed: [], created: [], cleared: [], conflicts: [], errors: [], warnings: [] };
+    it.each([
+      ["nothing happened", {}, false],
+      ["a pull", { pulled: ["k"] }, true],
+      ["a conflict", { conflicts: [{ id: "k", kind: "both-changed", label: "k" }] }, true],
+      ["an error", { errors: [{ id: "k", error: "e" }] }, true],
+      ["only a warning", { warnings: ["1 secrets kept changing during the sync: sync again later"] }, true],
+    ])("a background sync with %s", (_kind, part, expected) => {
+      expect(needsNotice({ ...empty, ...part } as unknown as Parameters<typeof needsNotice>[0])).toBe(expected);
     });
   });
 });

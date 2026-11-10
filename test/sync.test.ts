@@ -33,6 +33,13 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
     b = await unlocked(makeDevice(server.http, server.account));
   });
 
+  /** A fresh device of the account, synced once. */
+  async function makeDeviceUnlocked(): Promise<TestDevice> {
+    const d = await unlocked(makeDevice(server.http, server.account));
+    await d.controller.sync();
+    return d;
+  }
+
   /** Items the core encrypts as a whole ("blob", as Bitwarden's newer clients): the test crypto cannot read them. */
   const isBlob = (c: CipherDto) => typeof c.data === "string" && c.data.includes('"format_version"');
   /** ADR 0016: the first write-back into a login's own password asks first; this answers "write to the login". */
@@ -84,11 +91,11 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       await d.controller.unlock(server.account.password);
       expect(d.store.get(SECRET_USER_KEY)).toMatch(/^[A-Za-z0-9+/]+=*$/);
       d.controller.lock();
-      expect(await d.controller.unlockFromRememberedKey()).toBe(true);
+      expect(await d.controller.unlockFromRememberedKey()).not.toBeNull();
 
       d.controller.lock();
       d.store.set(SECRET_USER_KEY, btoa(String.fromCharCode(...new Uint8Array(64))));
-      expect(await d.controller.unlockFromRememberedKey()).toBe(false);
+      expect(await d.controller.unlockFromRememberedKey()).toBeNull();
       expect(d.store.get(SECRET_USER_KEY)).toBe("");
     });
   });
@@ -775,7 +782,9 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         }
         return undefined;
       };
+      // A blob (COSE account) cannot be read here: device b reading back "" below checks it.
       if (!isBlob(blank)) expect(await valueOf(blank.id)).toBeNull();
+      else expect((await makeDeviceUnlocked()).store.get("blank")).toBe("");
       expect(blank.notes).toBeNull();
       expect(await valueOf(note.id)).toBeNull();
       expect(await decryptString(server.ciphers.find((x) => x.id === note.id)!.notes!, server.account.userKey)).toBe("my own notes");
@@ -1029,7 +1038,7 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         await d.controller.unlock(server.account.password);
         d.controller.lock();
         (server as unknown as { privateKey: string | null }).privateKey = null;
-        expect(await d.controller.unlockFromRememberedKey()).toBe(false);
+        expect(await d.controller.unlockFromRememberedKey()).toBeNull();
         expect(d.store.get(SECRET_USER_KEY)).toBe("");
       });
 
