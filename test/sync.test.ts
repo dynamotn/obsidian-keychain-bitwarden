@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { decryptString, KdfType, unwrapKey } from "../src/bw/crypto";
+import { decryptString, KdfType, unwrapKey } from "./helpers/bw/crypto";
 import { SECRET_USER_KEY } from "../src/controller";
 import { ACCOUNT_KINDS, FakeBitwardenServer } from "./helpers/fakeServer";
 import { makeDevice, type TestDevice } from "./helpers/device";

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { AccountPrivateKey, CryptoError, decryptString, encryptBytes, SymmetricKey, unwrapKey } from "../src/bw/crypto";
+import { AccountPrivateKey, CryptoError, encryptBytes, SymmetricKey } from "../src/bw/crypto";
+import { decryptString, unwrapKey } from "./helpers/bw/crypto";
 import { ACCOUNT_KINDS, FakeBitwardenServer } from "./helpers/fakeServer";
 import { makeDevice, type TestDevice } from "./helpers/device";
 

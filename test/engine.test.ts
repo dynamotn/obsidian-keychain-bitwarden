@@ -4,7 +4,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BitwardenApi, resolveServerUrls } from "../src/bw/api";
-import { decryptString, unwrapKey } from "../src/bw/crypto";
+import { SymmetricKey } from "../src/bw/crypto";
+import { decryptString, unwrapKey } from "./helpers/bw/crypto";
 import { runSync, SyncAbortedError } from "../src/sync/engine";
 import type { Action } from "../src/sync/plan";
 import { newDeviceState } from "../src/sync/state";
@@ -60,10 +61,12 @@ describe("runSync", () => {
     const store = new MemorySecretStore();
     const state = newDeviceState();
     let cancelled = false;
+    // The plugin's own key type: the fake server's key comes from the test-side crypto.
+    const userKey = await SymmetricKey.fromBytes(server.account.userKey.exportBytes());
     const run = () =>
       runSync({
         api,
-        userKey: server.account.userKey,
+        userKey,
         store,
         state,
         saveState: () => {},

@@ -14,8 +14,8 @@ import {
   wrapKey,
   type KdfParams,
   type KeyAlgorithm,
-} from "../../src/bw/crypto";
-import { fromBase64, toBase64 } from "../../src/bw/encoding";
+} from "../helpers/bw/crypto";
+import { fromBase64, toBase64 } from "../helpers/bw/encoding";
 
 export interface TestAccount {
   email: string;

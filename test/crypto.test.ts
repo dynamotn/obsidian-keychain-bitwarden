@@ -130,6 +130,14 @@ describe("key wrapping", () => {
     await expect(decryptBytes(wrapped, wrapping)).rejects.toThrow(/holds cose-key data/);
   });
 
+  it("wraps a key under a legacy key in its byte format", async () => {
+    const wrapping = await SymmetricKey.generate();
+    const key = await SymmetricKey.generate("xaes256gcm");
+    const wrapped = await wrapKey(key, wrapping);
+    expect(wrapped.startsWith("2.")).toBe(true);
+    expect(toBase64((await unwrapKey(wrapped, wrapping)).exportBytes())).toBe(toBase64(key.exportBytes()));
+  });
+
   it("has no COSE form for a legacy key", async () => {
     const key = await SymmetricKey.generate();
     expect(() => key.coseKeyBytes()).toThrow(/Not a COSE key/);

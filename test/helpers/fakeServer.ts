@@ -2,7 +2,7 @@
 // Behaves like the real one where it matters: revision checks on update,
 // soft delete, server-assigned ids and revision dates.
 
-import type { CipherDto, CipherRequest, FolderDto, OrganizationDto } from "../../src/bw/api";
+import type { CipherDto, CipherRequest, FolderDto, OrganizationDto } from "./bw/api";
 import {
   deriveMasterKey,
   encryptBytes,
@@ -14,9 +14,10 @@ import {
   wrapKey,
   type KdfParams,
   type KeyAlgorithm,
-} from "../../src/bw/crypto";
-import { toBase64, utf8Encode } from "../../src/bw/encoding";
-import type { HttpClient, HttpRequest } from "../../src/bw/http";
+} from "./bw/crypto";
+import { toBase64, utf8Encode } from "./bw/encoding";
+import type { HttpClient, HttpRequest } from "./bw/http";
+import { signedSecurityState } from "./bw/sign";
 
 export const SERVER = "https://bw.test";
 
@@ -51,6 +52,8 @@ export class FakeBitwardenServer {
     private readonly protectedKey: string,
     private privateKey: string,
     private readonly shape: { newSyncShape: boolean; salt?: string } = { newSyncShape: false },
+    /** A COSE account's signed security state (ADR 0019), as `accountKeys` carries it; none for legacy keys. */
+    private readonly signedState: Awaited<ReturnType<typeof signedSecurityState>> | null = null,
   ) {}
 
   /**
@@ -79,6 +82,7 @@ export class FakeBitwardenServer {
       protectedKey,
       privateKey,
       { newSyncShape, salt },
+      userKey.isCose ? await signedSecurityState(userKey) : null,
     );
   }
 
@@ -216,10 +220,10 @@ export class FakeBitwardenServer {
     if (path === "/identity/accounts/prelogin") {
       const k = this.kdf;
       return json(200, {
-        Kdf: k.type,
-        KdfIterations: k.iterations,
-        KdfMemory: k.type === KdfType.Argon2id ? k.memory : null,
-        KdfParallelism: k.type === KdfType.Argon2id ? k.parallelism : null,
+        kdf: k.type,
+        kdfIterations: k.iterations,
+        kdfMemory: k.type === KdfType.Argon2id ? k.memory : null,
+        kdfParallelism: k.type === KdfType.Argon2id ? k.parallelism : null,
       });
     }
     if (path === "/identity/connect/token") {
@@ -250,7 +254,7 @@ export class FakeBitwardenServer {
           ? {
               id: "u1",
               email: this.account.email,
-              accountKeys: { publicKeyEncryptionKeyPair: { wrappedPrivateKey: this.privateKey } },
+              accountKeys: { publicKeyEncryptionKeyPair: { wrappedPrivateKey: this.privateKey }, ...this.signedState },
               organizations: this.organizations,
             }
           : {
@@ -258,12 +262,17 @@ export class FakeBitwardenServer {
               email: this.account.email,
               key: this.protectedKey,
               privateKey: this.privateKey,
+              ...(this.signedState ? { accountKeys: this.signedState } : {}),
               organizations: this.organizations,
             },
         ...(this.shape.newSyncShape
           ? {
               userDecryption: {
-                masterPasswordUnlock: { masterKeyEncryptedUserKey: this.protectedKey, salt: this.shape.salt ?? this.account.email },
+                masterPasswordUnlock: {
+                  kdf: { kdfType: this.kdf.type, iterations: this.kdf.iterations, ...argon2Params(this.kdf) },
+                  masterKeyEncryptedUserKey: this.protectedKey,
+                  salt: this.shape.salt ?? this.account.email,
+                },
               },
             }
           : {}),
@@ -324,8 +333,25 @@ export class FakeBitwardenServer {
     return json(404, { message: `No route ${req.method} ${path}` });
   };
 
+  /**
+   * This server as the core's `http` port (the Host shape): headers are the JSON text `[[name, value], ...]`, the
+   * body and the answer are bytes. Every request also goes through `http`, so `requests` records it.
+   */
+  readonly port = async (method: string, url: string, headers: string, body?: Uint8Array): Promise<[number, Uint8Array]> => {
+    // Decoded before the first await: `body` is a view into WASM memory.
+    const text = body?.length ? new TextDecoder().decode(body) : undefined;
+    const pairs = JSON.parse(headers) as [string, string][];
+    const res = await this.http({ method: method as HttpRequest["method"], url, headers: Object.fromEntries(pairs), body: text });
+    return [res.status, new TextEncoder().encode(res.text)];
+  };
+
   private toCipher(req: CipherRequest): CipherDto {
     const { lastKnownRevisionDate: _ignored, encryptedFor: _owner, ...rest } = req;
     return { ...rest, id: "", revisionDate: "", deletedDate: null, fields: req.fields ?? [] } as CipherDto;
   }
+}
+
+/** Argon2id's memory and parallelism, as `masterPasswordUnlock.kdf` carries them. */
+function argon2Params(kdf: KdfParams) {
+  return kdf.type === KdfType.Argon2id ? { memory: kdf.memory, parallelism: kdf.parallelism } : {};
 }
