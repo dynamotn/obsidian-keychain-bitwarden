@@ -15,7 +15,7 @@ import {
 import { deriveMasterKey, KdfType } from "../src/bw/crypto";
 import { toBase64, utf8Encode } from "../src/bw/encoding";
 import { FakeBitwardenServer } from "./helpers/fakeServer";
-import { makeDevice } from "./legacy/device";
+import { makeDevice } from "./helpers/device";
 
 beforeAll(() => {
   // The runner uses window timers, as Obsidian asks of plugins; Node has none.

@@ -4,7 +4,7 @@ import {
   SECRET_CLIENT_SECRET,
   SecretsController,
   type ControllerSettings,
-} from "../../src/controller";
+} from "./controller";
 import { resolveServerUrls } from "../../src/bw/api";
 import type { Argon2Runner } from "../../src/bw/argon2";
 import type { HttpClient } from "../../src/bw/http";

@@ -1,8 +1,6 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting } from "obsidian";
-import type { ConflictInfo, SyncReport } from "./sync/engine";
-import type { ConflictOverride } from "./sync/plan";
 import { KdfAbortedError } from "./bw/argon2";
-import type { Scope } from "./bw/vault";
+import type { ConflictInfo, ConflictOverride, Scope, SyncReport } from "./controller";
 
 export class UnlockModal extends Modal {
   private busy = false;
@@ -189,7 +187,7 @@ export class PickScopeModal extends FuzzySuggestModal<ScopeChoice> {
     return [
       { label: "Every vault on every device", scope: { kind: "global" } },
       { label: `Only vault "${this.vaultName}"`, scope: { kind: "vault", name: this.vaultName } },
-      { label: "Only this device", scope: { kind: "device", id: "" } },
+      { label: "Only this device", scope: { kind: "device" } },
     ];
   }
   getItemText(c: ScopeChoice): string {
@@ -209,5 +207,7 @@ export function summarize(report: SyncReport): string {
   if (report.conflicts.length) parts.push(`${report.conflicts.length} conflict(s)`);
   if (report.skipped.length) parts.push(`${report.skipped.length} item(s) skipped`);
   if (report.errors.length) parts.push(`${report.errors.length} error(s)`);
+  // The core's own sentences (kept changing, held, rollbacks, …), counts only.
+  parts.push(...report.warnings);
   return parts.length ? parts.join(", ") : "everything is up to date";
 }

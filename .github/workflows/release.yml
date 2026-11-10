@@ -1,6 +1,6 @@
 # Publish a release that BRAT and Obsidian can install from: bump the version
 # in manifest.json, package.json, versions.json and CLIENT_VERSION in
-# src/bw/api.ts, then push a tag equal to it (no "v" prefix), e.g.
+# src/controller.ts, then push a tag equal to it (no "v" prefix), e.g.
 # `git tag 0.2.0`.
 #
 # The build runs with a read-only token and no dependency lifecycle scripts;
@@ -70,7 +70,7 @@ jobs:
         run: |
           manifest=$(jq -r .version manifest.json)
           package=$(jq -r .version package.json)
-          client=$(sed -n 's/^const CLIENT_VERSION = "\(.*\)";$/\1/p' src/bw/api.ts)
+          client=$(sed -n 's/^const CLIENT_VERSION = "\(.*\)";$/\1/p' src/controller.ts)
           for version in "$manifest" "$package" "$client"; do
             if [[ "$version" != "$GITHUB_REF_NAME" ]]; then
               echo "::error::tag $GITHUB_REF_NAME, manifest.json $manifest, package.json $package and CLIENT_VERSION $client must be equal"

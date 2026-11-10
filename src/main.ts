@@ -1,14 +1,16 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting } from "obsidian";
 import argon2WorkerSource from "virtual:argon2-worker";
 import { argon2InThreadUpTo, argon2InWorker, IN_THREAD_MAX_MEMORY_KIB, type Argon2Runner } from "./bw/argon2";
-import type { HttpClient } from "./bw/http";
-import { NotificationHub } from "./bw/notifications";
-import { coreLoader } from "./core/load";
-import { hostPorts, STATE_KEY, type HostPorts } from "./core/ports";
-import { SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SecretsController, type Status } from "./controller";
-import type { SecretStore, SyncReport } from "./sync/engine";
-import type { ConflictOverride, ConflictPolicy } from "./sync/plan";
-import { parseDeviceState, type DeviceState } from "./sync/state";
+import {
+  SECRET_CLIENT_ID,
+  SECRET_CLIENT_SECRET,
+  SecretsController,
+  type ConflictOverride,
+  type ConflictPolicy,
+  type Status,
+  type SyncReport,
+  type UnlockSummary,
+} from "./controller";
 import { ConflictModal, PickScopeModal, PickSecretModal, summarize, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
@@ -25,70 +27,47 @@ const STATUS_TEXT: Record<Status, string> = {
   conflict: "⚠ Bitwarden conflicts",
 };
 
-const obsidianHttp: HttpClient = async (req) => {
-  const res = await requestUrl({
-    url: req.url,
-    method: req.method,
-    headers: req.headers,
-    body: req.body,
-    throw: false,
-  });
-  return { status: res.status, text: res.text };
-};
-
 export default class KeychainBitwardenPlugin extends Plugin {
   override settings: PluginSettings = { ...DEFAULT_SETTINGS };
 
   controller!: SecretsController;
-  /** Live updates from the server while unlocked. */
-  private hub!: NotificationHub;
   /** Last explicit user action (unlock, manual sync); drives auto-lock. */
   private lastActivity = Date.now();
   private lastSync = 0;
   private lastReport: SyncReport | null = null;
-  /** The dybw-core module; loaded at start, not used yet (M6 moves the vault and sync code onto it). */
-  private readonly loadCore = coreLoader();
-  /** What the core runs on; not used yet (the controller moves onto it in M6). */
-  ports!: HostPorts;
 
   override async onload(): Promise<void> {
-    this.loadCore().catch((e: unknown) => console.warn("[keychain-bitwarden] the dybw-core module did not load", e));
     this.settings = parseSettings(this.app.loadLocalStorage(SETTINGS_KEY));
     const storage = this.app.secretStorage;
-    const argon2 = this.argon2Runner();
-    this.ports = hostPorts({
-      requestUrl,
-      loadLocalStorage: (key) => this.app.loadLocalStorage(key) as unknown,
-      saveLocalStorage: (key, data) => this.app.saveLocalStorage(key, data),
-      secretStorage: storage,
-      createSocket: (url) => new WebSocket(url),
-      argon2,
-      crypto: window.crypto,
-    });
-    const store: SecretStore = {
-      get: (id) => storage.getSecret(id),
-      set: (id, value) => storage.setSecret(id, value),
-      list: () => storage.listSecrets(),
-    };
     this.controller = new SecretsController({
-      http: obsidianHttp,
-      store,
+      ports: {
+        requestUrl,
+        loadLocalStorage: (key) => this.app.loadLocalStorage(key) as unknown,
+        saveLocalStorage: (key, data) => this.app.saveLocalStorage(key, data),
+        createSocket: (url) => new WebSocket(url),
+        argon2: this.argon2Runner(),
+        crypto: window.crypto,
+      },
+      store: {
+        get: (id) => storage.getSecret(id),
+        set: (id, value) => storage.setSecret(id, value),
+        list: () => storage.listSecrets(),
+      },
       settings: () => this.settings,
-      loadState: () => this.loadDeviceState(),
-      saveState: (s) => this.app.saveLocalStorage(STATE_KEY, s),
       vaultName: this.app.vault.getName(),
       deviceName: `Obsidian (${Platform.isMobile ? (Platform.isIosApp ? "iOS" : "Android") : "desktop"})`,
-      argon2,
+      onTrap: (message) => new Notice(message, 0),
     });
+    // A trap can surface outside a call the controller awaits (a future polled from a microtask).
+    const trapped = (e: unknown) => {
+      if (e instanceof WebAssembly.RuntimeError) this.controller.trap();
+    };
+    this.registerDomEvent(window, "error", (ev) => trapped(ev.error));
+    this.registerDomEvent(window, "unhandledrejection", (ev) => trapped(ev.reason));
 
-    this.hub = new NotificationHub({
-      url: () => this.controller.notificationsHubUrl(),
-      createSocket: (url) => new WebSocket(url),
-      deviceId: () => this.controller.deviceId(),
-      onChange: () => void this.syncNow(false),
-    });
-    this.register(() => this.hub.stop());
-    this.register(this.controller.onStatus((s) => (s === "locked" ? this.hub.stop() : this.updateLiveSync())));
+    // Live updates from the server while unlocked (the core's hub).
+    this.register(() => this.controller.stopHub());
+    this.register(this.controller.onStatus((s) => (s === "locked" ? this.controller.stopHub() : this.updateLiveSync())));
 
     if (!Platform.isMobile) {
       const bar = this.addStatusBarItem();
@@ -113,7 +92,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
       },
     });
     this.addCommand({ id: "sync", name: "Sync now", callback: () => void this.syncNow(true) });
-    this.addCommand({ id: "upload", name: "Upload a secret to Bitwarden…", callback: () => this.openUpload() });
+    this.addCommand({ id: "upload", name: "Upload a secret to Bitwarden…", callback: () => void this.openUpload() });
     this.addCommand({ id: "resolve-conflicts", name: "Resolve conflicts…", callback: () => this.openConflicts() });
 
     this.addSettingTab(new SettingsTab(this.app, this));
@@ -137,8 +116,9 @@ export default class KeychainBitwardenPlugin extends Plugin {
     this.registerDomEvent(document, "visibilitychange", () => {
       if (document.visibilityState !== "visible" || !this.controller.isUnlocked) return;
       void this.syncNow(false);
-      // Mobile drops the connection in the background.
-      this.hub.wake();
+      // Mobile drops the connection in the background: start it again.
+      this.controller.stopHub();
+      this.updateLiveSync();
     });
   }
 
@@ -148,8 +128,8 @@ export default class KeychainBitwardenPlugin extends Plugin {
 
   /** Starts or stops live updates to match the setting and the lock state. */
   updateLiveSync(): void {
-    if (this.settings.liveSync && this.controller.isUnlocked) this.hub.start();
-    else this.hub.stop();
+    if (this.settings.liveSync && this.controller.isUnlocked) void this.controller.startHub(() => void this.syncNow(false));
+    else this.controller.stopHub();
   }
 
   /** Argon2id in a worker started from the embedded source, so unlocking never freezes Obsidian. */
@@ -159,14 +139,6 @@ export default class KeychainBitwardenPlugin extends Plugin {
     const url = URL.createObjectURL(new Blob([argon2WorkerSource], { type: "text/javascript" }));
     this.register(() => URL.revokeObjectURL(url));
     return argon2InWorker({ spawn: () => new Worker(url), timeoutMs: ARGON2_TIMEOUT_MS, fallback: inThread });
-  }
-
-  private loadDeviceState(): DeviceState {
-    const raw: unknown = this.app.loadLocalStorage(STATE_KEY);
-    const state = parseDeviceState(raw);
-    // Persist a fresh state immediately so the device id stays stable.
-    if (!raw) this.app.saveLocalStorage(STATE_KEY, state);
-    return state;
   }
 
   async saveSettings(): Promise<void> {
@@ -192,13 +164,20 @@ export default class KeychainBitwardenPlugin extends Plugin {
     new UnlockModal(
       this.app,
       async (password) => {
-        await this.controller.unlock(password);
+        this.showUnlockSummary(await this.controller.unlock(password));
         this.lastActivity = Date.now();
         await this.syncNow(true);
       },
       // Closing the dialog stops the key derivation instead of letting it finish unseen.
       () => this.controller.cancelUnlock(),
     ).open();
+  }
+
+  /** What the unlock found worth knowing: organizations it could not read, weak KDF settings. */
+  private showUnlockSummary(summary: UnlockSummary): void {
+    const lines = [...summary.orgProblems.map((p) => `organization ${p.organization}: ${p.reason}`), ...summary.warnings];
+    for (const line of lines) console.warn("[keychain-bitwarden]", line);
+    if (lines.length) new Notice(`Bitwarden: ${lines.join("\n")}`, 10_000);
   }
 
   async syncNow(verbose: boolean, overrides?: Map<string, ConflictOverride>): Promise<void> {
@@ -215,7 +194,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
       if (verbose || changed || report.conflicts.length || report.errors.length) {
         new Notice(`Bitwarden: ${summarize(report)}`);
       }
-      for (const err of report.errors) console.warn("[keychain-bitwarden]", err);
+      for (const err of report.errors) console.warn("[keychain-bitwarden]", `${err.id}: ${err.error}`);
       for (const s of report.skipped) console.debug("[keychain-bitwarden] skipped", s.cipherId, s.reason);
       if (report.conflicts.length && this.settings.conflictPolicy === "ask" && verbose) this.openConflicts();
     } catch (e) {
@@ -232,24 +211,28 @@ export default class KeychainBitwardenPlugin extends Plugin {
     new ConflictModal(this.app, conflicts, (choices) => this.syncNow(true, choices)).open();
   }
 
-  openUpload(): void {
+  async openUpload(): Promise<void> {
     if (!this.controller.isUnlocked) {
       this.openUnlock();
       return;
     }
-    const ids = this.controller.uploadCandidates();
+    let ids: string[];
+    try {
+      ids = await this.controller.uploadCandidates();
+    } catch (e) {
+      new Notice(`Bitwarden: ${(e as Error).message}`);
+      return;
+    }
     if (!ids.length) {
       new Notice("Bitwarden: every local secret is already synced");
       return;
     }
     new PickSecretModal(this.app, ids, (id) => {
       new PickScopeModal(this.app, this.app.vault.getName(), (scope) => {
-        try {
-          this.controller.queueUpload(id, scope);
-          void this.syncNow(true);
-        } catch (e) {
-          new Notice(`Bitwarden: ${(e as Error).message}`);
-        }
+        this.controller.queueUpload(id, scope).then(
+          () => this.syncNow(true),
+          (e: unknown) => new Notice(`Bitwarden: ${(e as Error).message}`),
+        );
       }).open();
     }).open();
   }
@@ -407,9 +390,8 @@ class SettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl).setName("Actions").setHeading();
-    new Setting(containerEl)
+    const device = new Setting(containerEl)
       .setName(p.controller.isUnlocked ? "Unlocked" : "Locked")
-      .setDesc(`Device id: ${p.controller.deviceId()}`)
       .addButton((b) =>
         b.setButtonText(p.controller.isUnlocked ? "Lock" : "Unlock").onClick(() => {
           if (p.controller.isUnlocked) p.controller.lock();
@@ -418,6 +400,11 @@ class SettingsTab extends PluginSettingTab {
         }),
       )
       .addButton((b) => b.setButtonText("Sync now").setCta().onClick(() => void p.syncNow(true)));
+    // Shown once the core has it; nothing when it cannot load (the unlock reports why).
+    p.controller.deviceId().then(
+      (id) => device.setDesc(`Device id: ${id}`),
+      () => undefined,
+    );
     new Setting(containerEl)
       .setName("Reset sync state")
       .setDesc("Forget what was synced on this device. Secrets themselves are kept; the next sync re-matches them.")
@@ -426,12 +413,10 @@ class SettingsTab extends PluginSettingTab {
           .setButtonText("Reset")
           .setWarning()
           .onClick(() => {
-            try {
-              p.controller.resetState();
-              new Notice("Bitwarden: sync state reset");
-            } catch (e) {
-              new Notice(`Bitwarden: ${(e as Error).message}`);
-            }
+            p.controller.resetState().then(
+              () => new Notice("Bitwarden: sync state reset"),
+              (e: unknown) => new Notice(`Bitwarden: ${(e as Error).message}`),
+            );
           }),
       );
   }

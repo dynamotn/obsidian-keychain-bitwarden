@@ -2,8 +2,7 @@
 // data.json: data.json is routinely synced or committed, and whoever can write
 // it must not be able to choose the server the API key is sent to.
 
-import type { ControllerSettings } from "./controller";
-import type { ConflictPolicy } from "./sync/plan";
+import type { ConflictPolicy, ControllerSettings } from "./controller";
 
 export interface PluginSettings extends ControllerSettings {
   /** Listen to the server's notifications hub and sync as soon as something changes. */
