@@ -3,8 +3,8 @@
 // `profile.accountKeys`. The plugin reads both shapes.
 
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_KINDS, FakeBitwardenServer } from "./helpers/fakeServer";
-import { makeDevice } from "./helpers/device";
+import { ACCOUNT_KINDS, FakeBitwardenServer } from "../helpers/fakeServer";
+import { makeDevice } from "./device";
 
 describe.each(ACCOUNT_KINDS)("the newer sync response, %s account key", (userKey) => {
   it("unlocks and syncs with the keys where newer servers put them", async () => {

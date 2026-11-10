@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { argon2InThread, KdfAbortedError } from "../src/bw/argon2";
-import { KdfType } from "../src/bw/crypto";
-import type { HttpClient, HttpRequest } from "../src/bw/http";
-import { SECRET_API_ORIGIN, SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SECRET_USER_KEY, type Status } from "../src/controller";
-import { SyncAbortedError } from "../src/sync/engine";
-import { FakeBitwardenServer } from "./helpers/fakeServer";
-import { makeDevice, type TestDevice } from "./helpers/device";
+import { argon2InThread, KdfAbortedError } from "../../src/bw/argon2";
+import { KdfType } from "../../src/bw/crypto";
+import type { HttpClient, HttpRequest } from "../../src/bw/http";
+import { SECRET_API_ORIGIN, SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SECRET_USER_KEY, type Status } from "../../src/controller";
+import { SyncAbortedError } from "../../src/sync/engine";
+import { FakeBitwardenServer } from "../helpers/fakeServer";
+import { makeDevice, type TestDevice } from "./device";
 
 // Controller behaviour not tied to the account's key type; the end-to-end sync
 // behaviour, for every key type, is in sync.test.ts.

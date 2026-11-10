@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fetchHttpClient } from "../helpers/fetchHttp";
 import { KdfType } from "../../src/bw/crypto";
 import { NotificationHub, type SocketLike } from "../../src/bw/notifications";
-import { makeDevice, type TestDevice } from "../helpers/device";
+import { makeDevice, type TestDevice } from "../legacy/device";
 import {
   createOrganization,
   createOrganizationNote,

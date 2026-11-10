@@ -10,7 +10,7 @@ import { runSync, SyncAbortedError } from "../src/sync/engine";
 import type { Action } from "../src/sync/plan";
 import { newDeviceState } from "../src/sync/state";
 import { FakeBitwardenServer, SERVER } from "./helpers/fakeServer";
-import { makeDevice, MemorySecretStore, type TestDevice } from "./helpers/device";
+import { makeDevice, MemorySecretStore, type TestDevice } from "./legacy/device";
 
 const planner = vi.hoisted(() => ({ edit: null as ((actions: Action[]) => Action[]) | null }));
 const keys = vi.hoisted(() => ({ withholdOrganization: false }));

@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { decryptString, KdfType, unwrapKey } from "./helpers/bw/crypto";
-import { SECRET_USER_KEY } from "../src/controller";
-import { ACCOUNT_KINDS, FakeBitwardenServer } from "./helpers/fakeServer";
-import { makeDevice, type TestDevice } from "./helpers/device";
-import type { CipherDto } from "../src/bw/api";
-import { fromBase64, toBase64 } from "../src/bw/encoding";
+import { decryptString, KdfType, unwrapKey } from "../helpers/bw/crypto";
+import { SECRET_USER_KEY } from "../../src/controller";
+import { ACCOUNT_KINDS, FakeBitwardenServer } from "../helpers/fakeServer";
+import { makeDevice, type TestDevice } from "./device";
+import type { CipherDto } from "../../src/bw/api";
+import { fromBase64, toBase64 } from "../../src/bw/encoding";
 
 /** Flips one ciphertext bit of an EncString, type 2 or 7. */
 function tamper(enc: string): string {

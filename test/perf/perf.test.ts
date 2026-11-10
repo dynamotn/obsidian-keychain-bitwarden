@@ -11,7 +11,7 @@ import type { CipherDto, SyncDto } from "../../src/bw/api";
 import { planSync, type BaseEntry, type RemoteEntry } from "../../src/sync/plan";
 import { coreLoader } from "../../src/core/load";
 import { FakeBitwardenServer } from "../helpers/fakeServer";
-import { makeDevice } from "../helpers/device";
+import { makeDevice } from "../legacy/device";
 
 const engine = typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "node";
 const label = /AppleWebKit/.test(engine) && !/Chrome/.test(engine) ? "webkit" : /Chrome/.test(engine) ? "chromium" : "node";
