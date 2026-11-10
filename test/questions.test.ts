@@ -3,7 +3,16 @@ import { STORAGE_PREFIX } from "../src/core/ports";
 import { KdfWeakenedError, OriginNotAcknowledgedError, SecurityDowngradeError, WrongPasswordError } from "../src/core/errors";
 import { isSelfHosted, summarize, type SyncReport } from "../src/controller";
 import { KdfAbortedError } from "../src/bw/argon2";
-import { acknowledgeToggle, historyAnswers, rollbackQuestion, syncQuestion, unlockAsking, unlockQuestion, type UnlockQuestion } from "../src/questions";
+import {
+  acknowledgeToggle,
+  historyAnswers,
+  rollbackQuestion,
+  syncQuestion,
+  unlessLocked,
+  unlockAsking,
+  unlockQuestion,
+  type UnlockQuestion,
+} from "../src/questions";
 import { FakeBitwardenServer } from "./helpers/fakeServer";
 import { makeDevice, type TestDevice } from "./helpers/device";
 
@@ -368,6 +377,26 @@ describe("the core's questions", () => {
       const report = { ...emptyReport, rollbacks: [{ id: "k" }], questions: [{ id: "j" }] } as unknown as SyncReport;
       expect(syncQuestion(report, "ask", true)).toBe("history");
       expect(syncQuestion({ ...report, questions: [] }, "ask", true)).toBeNull();
+    });
+  });
+
+  describe("unlessLocked", () => {
+    it("passes an answer on while the lock it was asked under holds", async () => {
+      await a.controller.unlock(server.account.password);
+      const fn = vi.fn();
+      await unlessLocked(a.controller, fn)("x", 1);
+      expect(fn).toHaveBeenCalledWith("x", 1);
+    });
+
+    it("drops an answer given across a lock, even after unlocking again", async () => {
+      await a.controller.unlock(server.account.password);
+      const fn = vi.fn();
+      const answer = unlessLocked(a.controller, fn);
+      a.controller.lock();
+      await answer();
+      await a.controller.unlock(server.account.password);
+      await answer();
+      expect(fn).not.toHaveBeenCalled();
     });
   });
 

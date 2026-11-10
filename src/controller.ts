@@ -363,6 +363,12 @@ export class SecretsController {
   private async open(start: (session: WasmSession, profile: string, clientSecret: string) => Promise<string>) {
     const [profile, clientSecret] = this.login();
     this.cancelUnlock();
+    // The core locks before it unlocks: a failed or cancelled unlock leaves it locked, so say so now.
+    if (this.unlocked) {
+      this.unlocked = false;
+      this.stopHub();
+      this.setStatus("locked");
+    }
     const generation = this.generation;
     const abort = new AbortController();
     this.unlocking = abort;
@@ -427,6 +433,11 @@ export class SecretsController {
     this.unlocked = false;
     // After a trap the status keeps saying why, and to reload.
     if (!this.trapped) this.setStatus("locked");
+  }
+
+  /** The organizations to sync go into the profile at unlock: a change applies from the next one, so this locks. */
+  organizationsChanged(): void {
+    this.lock();
   }
 
   /** ADR 0017: the user confirmed, on this device, the weaker KDF the server offers. */

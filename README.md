@@ -119,7 +119,8 @@ device picks the same one, however the items are edited later.
 ### Organization items
 
 Turn on **Sync organization items** to also sync the items of your
-organizations that carry an `obsidian:id` field:
+organizations that carry an `obsidian:id` field (changing it locks
+Bitwarden; it applies from the next unlock):
 
 - Edits go back to the organization, encrypted with its key; the item stays
   in its organization and collections.

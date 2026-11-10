@@ -15,7 +15,8 @@ import {
   type SyncReport,
   type UnlockSummary,
 } from "./controller";
-import { acknowledgeToggle, ORIGIN_NAME, ORIGIN_TEXT, rollbackQuestion, syncQuestion, unlockAsking } from "./questions";
+import { LockedError } from "./core/errors";
+import { acknowledgeToggle, ORIGIN_NAME, ORIGIN_TEXT, rollbackQuestion, syncQuestion, unlessLocked, unlockAsking } from "./questions";
 import { ask, ConflictModal, HistoryModal, PickScopeModal, PickSecretModal, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
@@ -219,22 +220,29 @@ export default class KeychainBitwardenPlugin extends Plugin {
       for (const u of report.unknownFeatures) console.debug("[keychain-bitwarden] needs", u.cipherId, u.features.join(", "));
       if (verbose) this.askAfterSync(report);
     } catch (e) {
-      new Notice(`Bitwarden: ${(e as Error).message}`, 10_000);
+      // A lock during the sync stopped it; that is not an error to show.
+      if (!(e instanceof LockedError)) new Notice(`Bitwarden: ${(e as Error).message}`, 10_000);
     }
   }
 
   /** Opens the modal the report asks for; a declined rollback goes on to the next question in line. */
   private askAfterSync(report: SyncReport, rollbackDeclined = false): void {
     const question = syncQuestion(report, this.settings.conflictPolicy, rollbackDeclined);
+    // An answer given across a lock is dropped: no unlock dialog, no stale answers.
     if (question === "conflicts") this.openConflicts();
-    else if (question === "history") new HistoryModal(this.app, report.questions, (a) => this.syncNow(true, undefined, a)).open();
+    else if (question === "history") {
+      const answered = unlessLocked(this.controller, (a: Map<string, HistoryAnswer>) => this.syncNow(true, undefined, a));
+      new HistoryModal(this.app, report.questions, answered).open();
+    }
     // Not awaited: the dialog that asked for this sync (unlock, conflicts) closes meanwhile.
     else if (question === "rollbacks") {
-      void ask(this.app, rollbackQuestion(report)).then((ok) => {
-        // Accepts every rollback of that sync at once: ADR 0019 allows one button per report.
-        if (ok) void this.syncNow(true, undefined, undefined, true);
-        else this.askAfterSync(report, true);
-      });
+      void ask(this.app, rollbackQuestion(report)).then(
+        unlessLocked(this.controller, (ok: boolean) => {
+          // Accepts every rollback of that sync at once: ADR 0019 allows one button per report.
+          if (ok) void this.syncNow(true, undefined, undefined, true);
+          else this.askAfterSync(report, true);
+        }),
+      );
     }
   }
 
@@ -244,7 +252,8 @@ export default class KeychainBitwardenPlugin extends Plugin {
       new Notice("Bitwarden: no conflicts");
       return;
     }
-    new ConflictModal(this.app, conflicts, (choices) => this.syncNow(true, choices)).open();
+    const chosen = unlessLocked(this.controller, (choices: Map<string, ConflictOverride>) => this.syncNow(true, choices));
+    new ConflictModal(this.app, conflicts, chosen).open();
   }
 
   async openUpload(): Promise<void> {
@@ -403,11 +412,13 @@ class SettingsTab extends PluginSettingTab {
       .setDesc(
         "Also sync items of your Bitwarden organizations that carry an obsidian:id field. Anyone who holds an " +
           "organization's key, and a compromised server, can create items in it, so a personal item always wins " +
-          "over an organization item with the same ID. Items you may not edit are only pulled.",
+          "over an organization item with the same ID. Items you may not edit are only pulled. Changing it locks Bitwarden.",
       )
       .addToggle((t) =>
         t.setValue(p.settings.syncOrganizations).onChange(async (v) => {
           p.settings.syncOrganizations = v;
+          // Read at unlock: lock, so turning it off stops pulling organization items now.
+          p.controller.organizationsChanged();
           await p.saveSettings();
         }),
       );

@@ -9,7 +9,7 @@ import {
   TRAP_MESSAGE,
   type Status,
 } from "../src/controller";
-import { ApiError, LockedError, OriginNotAcknowledgedError, PortError } from "../src/core/errors";
+import { ApiError, LockedError, OriginNotAcknowledgedError, PortError, WrongPasswordError } from "../src/core/errors";
 import { STORAGE_PREFIX, type SocketLike } from "../src/core/ports";
 import { KdfType } from "./helpers/bw/crypto";
 import type { HttpClient, HttpRequest } from "./helpers/bw/http";
@@ -114,6 +114,16 @@ describe("SecretsController", () => {
       await expect(d.controller.sync()).rejects.toBeInstanceOf(LockedError);
     });
 
+    it("is locked after a failed unlock while unlocked: the core locked first, so the unlock is offered", async () => {
+      const seen: Status[] = [];
+      a.controller.onStatus((s) => seen.push(s));
+      await expect(a.controller.unlock("wrong")).rejects.toBeInstanceOf(WrongPasswordError);
+      expect(a.controller.isUnlocked).toBe(false);
+      expect(a.controller.status).toBe("locked");
+      expect(seen).toEqual(["locked"]);
+      await expect(a.controller.sync()).rejects.toBeInstanceOf(LockedError);
+    });
+
     it("needs a self-hosted server acknowledged on this device first, and sends it nothing before (ADR 0018)", async () => {
       const d = makeDevice(server.http, server.account);
       d.localStorage.delete(`${STORAGE_PREFIX}acknowledged-origins`);
@@ -130,6 +140,15 @@ describe("SecretsController", () => {
       const summary = await d.controller.unlock(server.account.password);
       expect(summary).toMatchObject({ securityVersion: 0, warnings: [expect.stringMatching(/below the recommended floor/)] });
       expect(summary.orgProblems.map((p) => p.organization)).toEqual([broken]);
+    });
+  });
+
+  describe("organizations setting", () => {
+    it("locks when it changes: the organizations to sync go into the profile at unlock", async () => {
+      a.controller.organizationsChanged();
+      expect(a.controller.isUnlocked).toBe(false);
+      expect(a.controller.status).toBe("locked");
+      await expect(a.controller.sync()).rejects.toBeInstanceOf(LockedError);
     });
   });
 
