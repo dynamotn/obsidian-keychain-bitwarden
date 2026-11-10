@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { STORAGE_PREFIX, type SocketLike } from "../../src/core/ports";
 import { fetchHttpClient } from "../helpers/fetchHttp";
-import { encryptString, KdfType } from "../helpers/bw/crypto";
+import { decryptString, encryptString, KdfType, unwrapKey } from "../helpers/bw/crypto";
 import { makeDevice, type TestDevice } from "../helpers/device";
 import {
   api,
@@ -224,11 +224,11 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
   });
 
   // Two answers only a real server gives (M6 Task 9 review). No bitwarden.com account is at hand: Vaultwarden
-  // answers here, and both answers are refusals the core has to handle (dybw-core follow-ups, not plugin patches).
-  it("pushes to an item the server sends without its secure note part: Vaultwarden refuses the push", async () => {
+  // answers here. The first is handled by the core since a3d6e0a; the second is still a refusal (ADR 0019).
+  it("pushes to an item the server sends without its secure note part", async () => {
     const enc = (s: string) => encryptString(s, account.userKey);
-    // Vaultwarden does not store a secure note without its part ("Data missing"): the item is made whole, and the
-    // device is shown it without the part, as a server that drops it would.
+    // Vaultwarden does not store a secure note without its part ("Data missing"), so it never serves one: the item
+    // is made whole, and the sync answers are stripped of the part, as a server that drops it would send them.
     const created = (await api(account, URL_!, "POST", "/ciphers", {
       type: 2,
       folderId: null,
@@ -254,13 +254,14 @@ describe.skipIf(!URL_)("against Vaultwarden", () => {
     expect((await a.controller.sync()).pulled).toContain("bare-note");
     a.store.set("bare-note", "second");
     const r = await a.controller.sync();
-    // The core sends the part as it got it (null); Vaultwarden answers 400. Nothing is lost: the value stays here,
-    // the item stays as it was.
-    expect(sent).toEqual([null]);
-    expect(r.pushed).toEqual([]);
-    expect(r.errors).toEqual([{ id: "bare-note", error: expect.stringMatching(/^HTTP 400 .*Data missing/) }]);
-    expect(a.store.get("bare-note")).toBe("second");
-    expect(await api(account, URL_!, "GET", `/ciphers/${created.id}`)).toMatchObject({ secureNote: { type: 0 } });
+    // The core fills in the empty part the server lacked, and Vaultwarden takes the push.
+    expect(sent).toEqual([{ type: 0 }]);
+    expect(r.errors).toEqual([]);
+    expect(r.pushed).toEqual(["bare-note"]);
+    const stored = await api(account, URL_!, "GET", `/ciphers/${created.id}`);
+    expect(stored.secureNote).toEqual({ type: 0 });
+    const key = stored.key ? await unwrapKey(stored.key, account.userKey) : account.userKey;
+    expect(await decryptString(stored.notes, key)).toBe("second");
   });
 
   it("writes a new item of a COSE account at security version 2 as a blob: Vaultwarden refuses it at any size", async () => {

@@ -761,8 +761,8 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
       expect((await a.controller.sync(undefined, writeToLogin("bare-login"))).pushed).toEqual(["bare-login", "bare-note"]);
       expect(await remoteValue(login.id)).toBe("pw");
       expect(await remoteValue(note.id)).toBe("edited");
-      // Left as the server sent it: the core does not add the missing part back.
-      expect(server.ciphers.find((c) => c.id === note.id)!.secureNote).toBeNull();
+      // The core sends an empty secure note part where the server lacked one (Vaultwarden refuses null).
+      expect(server.ciphers.find((c) => c.id === note.id)!.secureNote).toEqual({ type: 0 });
       expect((await b.controller.sync()).pulled).toEqual(["bare-login", "bare-note"]);
       expect(b.store.get("bare-login")).toBe("pw");
     });
