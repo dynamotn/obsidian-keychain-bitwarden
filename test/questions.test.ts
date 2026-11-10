@@ -398,6 +398,15 @@ describe("the core's questions", () => {
       await answer();
       expect(fn).not.toHaveBeenCalled();
     });
+
+    it("drops an answer given after a failed re-unlock: the core locked first, no unlock dialog", async () => {
+      await a.controller.unlock(server.account.password);
+      const fn = vi.fn();
+      const answer = unlessLocked(a.controller, fn);
+      await expect(a.controller.unlock("wrong")).rejects.toBeInstanceOf(WrongPasswordError);
+      await answer();
+      expect(fn).not.toHaveBeenCalled();
+    });
   });
 
   describe("summarize", () => {

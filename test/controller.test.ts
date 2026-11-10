@@ -374,6 +374,21 @@ describe("SecretsController", () => {
     });
   });
 
+  describe("a sync across a re-unlock", () => {
+    it("ignores the core's late locked rejection once a re-unlock succeeded", async () => {
+      vi.spyOn(WasmSession.prototype, "runSync").mockImplementation(async () => {
+        await a.controller.unlock(server.account.password);
+        throw JSON.stringify({ code: "locked", message: "locked" });
+      });
+      const seen: Status[] = [];
+      a.controller.onStatus((s) => seen.push(s));
+      await expect(a.controller.sync()).rejects.toBeInstanceOf(LockedError);
+      expect(a.controller.isUnlocked).toBe(true);
+      expect(a.controller.status).toBe("idle");
+      expect(seen).not.toContain("error");
+    });
+  });
+
   describe("uploads", () => {
     it("refuses a secret that does not exist on this device", async () => {
       await expect(a.controller.queueUpload("missing", { kind: "global" })).rejects.toThrow(/No local secret named "missing"/);

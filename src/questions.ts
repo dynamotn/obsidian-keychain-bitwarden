@@ -99,11 +99,11 @@ export async function unlockAsking<T>(
   }
 }
 
-/** `fn`, dropped once Bitwarden locked since: an answer to a question asked before a lock is no longer wanted. */
+/** `fn`, dropped once Bitwarden locked or re-unlocked since: an answer to a question asked before is no longer wanted. */
 export function unlessLocked<A extends unknown[]>(controller: SecretsController, fn: (...args: A) => unknown) {
-  const generation = controller.lockGeneration;
+  const epoch = controller.answerEpoch;
   return async (...args: A): Promise<void> => {
-    if (controller.lockGeneration === generation) await fn(...args);
+    if (controller.answerEpoch === epoch) await fn(...args);
   };
 }
 

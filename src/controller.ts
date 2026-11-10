@@ -204,6 +204,8 @@ export class SecretsController {
   private tail: Promise<unknown> = Promise.resolve();
   /** Bumped on every lock; an unlock or sync started under an older generation stops. */
   private generation = 0;
+  /** Bumped when an unlock finds the core unlocked and locks it first, which is a lock too, but one `generation` must not see. */
+  private relocks = 0;
   /** Aborts the key derivation of the unlock in progress, if any (the Argon2 port reads it). */
   private unlocking: AbortController | null = null;
   /** Stops the running hub and ends its sleeps at once (the clock port reads it). */
@@ -232,6 +234,11 @@ export class SecretsController {
   /** Changes on every lock (and unload): a question asked before is no longer wanted. */
   get lockGeneration(): number {
     return this.generation;
+  }
+
+  /** Changes on every lock and every re-unlock: an answer or a sync outcome from before is stale. */
+  get answerEpoch(): number {
+    return this.generation + this.relocks;
   }
 
   get isUnlocked(): boolean {
@@ -365,6 +372,7 @@ export class SecretsController {
     this.cancelUnlock();
     // The core locks before it unlocks: a failed or cancelled unlock leaves it locked, so say so now.
     if (this.unlocked) {
+      this.relocks++;
       this.unlocked = false;
       this.stopHub();
       this.setStatus("locked");
@@ -518,6 +526,7 @@ export class SecretsController {
     retried = false,
   ): Promise<SyncReport> {
     const generation = this.generation;
+    const epoch = this.answerEpoch;
     const settings = this.deps.settings();
     const options = JSON.stringify({
       policy: settings.conflictPolicy,
@@ -551,7 +560,8 @@ export class SecretsController {
       // A value typed during the sync stopped it after it saved what it did: once more, and the edit is seen.
       // shortcut: the first run's report is lost (the core rejected); what it pulled or pushed is not in the notice.
       if (this.moved && !retried) return await this.doSync(overrides, answers, acceptRollback, true);
-      if (this.unlocked) this.setStatus("error", (e as Error).message);
+      // A re-unlock since the sync started made this rejection the old session's: not the new one's error.
+      if (this.unlocked && epoch === this.answerEpoch) this.setStatus("error", (e as Error).message);
       throw e;
     } finally {
       this.snapshot = null;
