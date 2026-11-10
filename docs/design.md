@@ -25,7 +25,7 @@ way it is, and how it was verified. The user-facing summary is in
   WebCrypto (RSA-OAEP for organization keys, randomness), Web Workers,
   WebSocket and the Obsidian API. `@noble/ciphers` is a dev dependency of the
   test crypto only.
-- Bundle: one `main.js` of 1 246 464 bytes (production build), with the core
+- Bundle: one `main.js` of 1 247 284 bytes (production build), with the core
   module (base64) and the Argon2 worker embedded in it. Its only import is
   `obsidian`.
 
@@ -676,7 +676,7 @@ At M6 (dybw-core `a3d6e0a`):
 | Same suites in WebKit and Chromium | `npm run test:browser` | **1012 passed** (506 × 2) |
 | Real server + independent clients (Vaultwarden 1.37.5, rbw, the official CLI) | `npm run test:integration` | **16 passed** |
 | Performance budgets | `npm run perf`, `npm run perf:browser` | **5 + 10 passed** |
-| Bundle gate (ADR 0024) | `npm run check:bundle` | 1 246 464 of 1 572 864 bytes; only `obsidian` is required, no Node globals |
+| Bundle gate (ADR 0024) | `npm run check:bundle` | 1 247 284 of 1 572 864 bytes; only `obsidian` is required, no Node globals |
 
 ### 10.1 Known-answer vectors and the SDK check
 
