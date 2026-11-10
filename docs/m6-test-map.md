@@ -1,7 +1,8 @@
 # M6 test map
 
-Every test that M6 replaced or removed, with the test that now covers it. No row without a covering test.
-Core tests are named at dybw-core `cd962fa` (the rev in `core.rev`), paths under `crates/`; plugin tests by file
+Every test that M6 replaced or removed, with the test that now covers it. No row without a covering test, except
+the few marked "by construction" or "not applicable", which say why.
+Core tests are named at dybw-core `a3d6e0a` (the rev in `core.rev`), paths under `crates/`; plugin tests by file
 and full name.
 
 M6 removed the plugin's own Bitwarden code (`src/bw/` but the Argon2 runner and its worker, and `src/sync/`) and the
@@ -32,8 +33,10 @@ The scenarios are the same; what they assert follows the core where it reports d
 - ADR 0016: the first write-back into a login's own password asks (`questions`); the ported tests answer
   `write-to-login` on the next sync.
 - A COSE ("v2") account's new item is encrypted as a whole (a blob) that the test crypto cannot read: those
-  assertions read the item back through another device instead, and such an upload has no field or notes limit.
-- An item without a name is labelled with its id; a pushed item keeps a missing `secureNote` part missing; when a
+  assertions read the item back through another device instead, and such an upload's limits are on the plaintext:
+  5,000 characters per field and 10,000 for the notes.
+- An item without a name is labelled with its id; a push to a secure note without its `secureNote` part sends an
+  empty part (`{type: 0}`, dybw-core `a3d6e0a`; Vaultwarden refuses `null`); when a
   value moves into the notes, the first `obsidian:location` becomes `notes` and the others stay.
 
 ## Per test
@@ -185,7 +188,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 ### `test/notifications.test.ts` (before M6)
 
 The hub is the core's (`runHub`, `crates/dybw-core/src/api/hub.rs`): the protocol rows are core tests in
-`crates/dybw-core/src/api/msgpack_tests.rs` and `hub_tests.rs` (dybw-core `cd962fa`); the plugin's own rows, through
+`crates/dybw-core/src/api/msgpack_tests.rs` and `hub_tests.rs` (dybw-core `a3d6e0a`); the plugin's own rows, through
 the controller, its socket port and the real core, are in `test/hub.test.ts`. Ruling: `wake()` starts a running hub
 over (stop + restart) instead of only waking one that is down, so a socket a suspend killed silently is replaced too.
 
@@ -268,7 +271,7 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | BitwardenApi > sync > refuses a response with %s (no profile, no account key, an empty body) | dybw-core `client_tests.rs::sync_needs_a_profile_id`; `dybw-vectors/tests/accounts.rs::partial_unlock_data_without_profile_key_is_incomplete` |
 | BitwardenApi > sync > finds the account key where newer servers put it | dybw-core `accounts.rs::unlock_from_user_decryption_only`; `test/sync-shape.test.ts` › … unlocks and syncs with the keys where newer servers put them |
 | BitwardenApi > refuses to write an item before a sync told it whose vault this is | dybw-core `client_tests.rs::writes_name_their_owner_and_encode_ids` |
-| BitwardenApi > errors from the server > quotes what the server says, marked as coming from it | dybw-core `client_tests.rs::errors_shaped`, `::server_text_is_joined_cleaned_and_clipped`; `test/integration/vaultwarden.test.ts` › … pushes to an item the server sends without its secure note part (a real server's text in the report) |
+| BitwardenApi > errors from the server > quotes what the server says, marked as coming from it | dybw-core `client_tests.rs::errors_shaped`, `::server_text_is_joined_cleaned_and_clipped` |
 | BitwardenApi > errors from the server > joins several messages and collapses whitespace | dybw-core `client_tests.rs::server_text_is_joined_cleaned_and_clipped` |
 | BitwardenApi > errors from the server > clips long server text | dybw-core `client_tests.rs::errors_shaped`, `::server_text_is_joined_cleaned_and_clipped` |
 | BitwardenApi > errors from the server > gives only the status for %s | dybw-core `client_tests.rs::bodies_that_are_not_json_give_only_the_status` |
@@ -281,7 +284,7 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | key derivation (known answers) > Argon2id master key and stretched key | dybw-core `tests.rs::master_keys_match_kat`; `test/argon2.test.ts` › Argon2 in a worker > derives the known-answer key in a real worker / in the embedded worker, as shipped |
 | EncString > decrypts the protected user key with the stretched key | dybw-core `tests.rs::master_keys_match_kat`, `dybw-vectors/tests/accounts.rs::unlock_pbkdf2` |
 | EncString > decrypts reference ciphertexts and round-trips its own | dybw-core `tests.rs::enc_strings_match_kat`, `::round_trip` |
-| EncString > uses a fresh IV for every encryption | dybw-core `tests.rs::rng_and_key_ref` (every IV comes from the host's `random`); `dybw-core-wasm/src/tests.rs::random_fills_large_buffers_in_chunks` |
+| EncString > uses a fresh IV for every encryption | dybw-core `crypto/tests.rs::two_encryptions_of_one_value_differ` (type 2 and type 7) |
 | EncString > rejects tampered data, wrong keys and unauthenticated types | dybw-core `tests.rs::malformed_and_unsupported_inputs`, `::round_trip` (wrong key: `BadMac`) |
 | EncString > names no type when the string has none | dybw-core `tests.rs::malformed_and_unsupported_inputs` |
 | EncString > rejects type 2 parts of the wrong size before checking the MAC | dybw-core `tests.rs::malformed_and_unsupported_inputs` (IV, MAC and part counts) |
@@ -289,12 +292,12 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | EncString > refuses legacy data under a COSE key | dybw-core `dybw-core/src/crypto/cose_tests.rs::key_types_cross_decrypt` |
 | key wrapping > wraps a COSE key under a COSE key as a COSE key | dybw-core `cose_tests.rs::key_types_cross_decrypt` |
 | key wrapping > wraps a key under a legacy key in its byte format | dybw-core `tests.rs::round_trip` (`decrypt_key` of a wrapped key) |
-| key wrapping > has no COSE form for a legacy key | dybw-core `cose_tests.rs::key_types_cross_decrypt` (content kinds are not interchangeable) |
+| key wrapping > has no COSE form for a legacy key | not applicable: the core's `encode_cose_key` takes a `CoseKey`, so the compiler rules out a legacy key; no test |
 | AccountPrivateKey > reports a private key that is not PKCS#8 | dybw-core `dybw-core/src/crypto/rsa_mark_tests.rs::pkcs8_has_its_own_decrypt`; `dybw-core/src/vault/orgs_tests.rs::a_missing_or_unreadable_private_key_is_a_problem_per_organization`; `test/core/ports.test.ts` (rsaOaepDecrypt rejects an unimportable key with `key`) |
 | cancelling the key derivation > does not start when already cancelled | `test/controller.test.ts` › SecretsController > unlock > stops before deriving the key when cancelled; `test/argon2.test.ts` › Argon2 on the calling thread > refuses to start when already aborted |
 | cancelling the key derivation > discards a PBKDF2 key cancelled while it was derived | `test/controller.test.ts` › SecretsController > unlock > lets a lock that arrives while the key is derived win; dybw-core `dybw-core-wasm/src/tests.rs::lock_wins_over_a_running_unlock` |
 | KDF bounds > refuses downgraded or abusive parameters | dybw-core `tests.rs::kdf_bounds`; `accounts.rs::accept_kdf_refuses_out_of_bounds_params`, `::out_of_range_kdf_names_its_source` |
-| SymmetricKey > wipes its raw material | dybw-core `tests.rs::debug_and_errors_are_redacted` (keys are `Zeroizing`, never printed); the WASM instance wipes on `lock` (`dybw-core-wasm/src/tests.rs::a_session_unlocks_and_locks`) |
+| SymmetricKey > wipes its raw material | by construction (key bytes are `Zeroizing`, wiped on drop), no test |
 | SymmetricKey > rejects keys of the wrong size | dybw-core `tests.rs::malformed_and_unsupported_inputs` (`from_bytes(&[0; 63])`), `cose_tests.rs::aead_inputs` |
 | ValueFingerprinter > is deterministic per key and binds the id | dybw-core `rsa_mark_tests.rs::marks_match_kat`, `::marks_on_cose_keys_and_subkeys` |
 
@@ -325,7 +328,7 @@ the core reads the same file (`vectors/crypto/cose-vectors.json`, byte-identical
 | COSE keys > use the SDK's padding | dybw-core `cose_tests.rs::cose_pad_and_key_errors` (`pad`/`unpad`) |
 | COSE keys > keep their kind when remembered | dybw-core `accounts.rs::a_remembered_cose_key_unlocks_with_its_security_state`; `test/sync.test.ts` (COSE accounts) › … remembers the key only when asked, and drops a stale one |
 | CBOR decoder > rejects %s | dybw-core `cose_tests.rs::cbor_rejects` |
-| CBOR decoder > keeps a truncated text string a truncation, not a UTF-8 error | dybw-core `cose_tests.rs::cbor_rejects` |
+| CBOR decoder > keeps a truncated text string a truncation, not a UTF-8 error | no longer applicable: the core has one `Malformed` error for both (`cose_tests.rs::cbor_rejects` refuses each) |
 | CBOR decoder > reads integers beyond 2^53 as bigints | dybw-core `cose_tests.rs::cbor_round_trip_shortest` (`u64::MAX`, the full 64-bit range) |
 | CBOR decoder > rejects a %s longer than 2^53 bytes | dybw-core `cose_tests.rs::cbor_huge_array_header_fails_without_allocating`, `::cbor_rejects` |
 | CBOR decoder > reads the simple values false, true and null | dybw-core `cose_tests.rs::cbor_round_trip_shortest` |
@@ -417,7 +420,7 @@ One to one with dybw-core `dybw-core/src/sync/plan_tests.rs` (the planner was po
 ### `test/integration/vaultwarden.test.ts`
 
 Every test kept under its name, on the core's controller (`test/helpers/device.ts`), the hub through `startHub`.
-Added: › follows redirects only for a server acknowledged on the device (ADR 0018), › pushes to an item the server
-sends without its secure note part: Vaultwarden refuses the push, › writes a new item of a COSE account at security
+Added: › sends credentials to a self-hosted server only once acknowledged, as with requestUrl (ADR 0018), › pushes to
+an item the server sends without its secure note part, › writes a new item of a COSE account at security
 version 2 as a blob: Vaultwarden refuses it at any size. The two COSE runs use security state version 1: Vaultwarden
 1.37.5 refuses blob items (the last test).

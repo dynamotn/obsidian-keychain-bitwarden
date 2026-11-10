@@ -46,15 +46,19 @@ flowchart LR
   one vault only, or to one device only.
 - **Share with your team.** Optionally, items of your Bitwarden
   organizations sync too, with the organization's permissions respected.
-- **Unlocking never freezes Obsidian.** The key is derived in a background
-  worker, so even the heaviest Argon2 settings leave the app responsive, and
-  you can cancel by closing the dialog.
+- **Unlocking stays out of your way.** An Argon2 key is derived in a
+  background worker, so even the heaviest settings leave the app responsive,
+  and you can cancel by closing the dialog. A PBKDF2 unlock takes a fraction
+  of a second on the main thread.
 - **Works with any Bitwarden server.** That includes bitwarden.com,
   bitwarden.eu and self-hosted Bitwarden or Vaultwarden. Tested against
   Vaultwarden, `rbw` and the official Bitwarden CLI.
 - **Ready for Bitwarden's newer encryption.** Accounts on the "v2" key
   format (XAES-256-GCM or XChaCha20-Poly1305, stored as COSE) work like any
-  other, checked both ways against Bitwarden's own SDK.
+  other, checked both ways against Bitwarden's own SDK. Not on Vaultwarden
+  yet: it serves no signed security state, so the plugin refuses a v2
+  account there (ADR 0019), and new items of a v2 account are written as a
+  single encrypted blob, which Vaultwarden refuses.
 
 ## Quick start
 
@@ -249,7 +253,7 @@ BW_IT_URL=http://127.0.0.1:18080 npm run test:integration
 
 Login, unlock, the sync and the notifications hub run in
 [dybw-core](https://gitlab.com/dynamo-tools/dybw-core), compiled to WebAssembly and
-embedded in `main.js`; `core.rev` names the commit (now `cd962fa`). Its own
+embedded in `main.js`; `core.rev` names the commit (now `a3d6e0a`). Its own
 suites cover the cryptography (known answers from independent Python
 implementations and from Bitwarden's SDK, which also decrypts what the core
 encrypts) and the dybw conformance vectors, in Node, Chromium and WebKit.

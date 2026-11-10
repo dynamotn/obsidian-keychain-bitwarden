@@ -16,7 +16,7 @@ way it is, and how it was verified. The user-facing summary is in
   and ADR 0021 (blob ciphers, 1.6). The core also brings ADR 0017 (KDF
   parameters pinned per device) and ADR 0018 (redirects and acknowledged
   origins).
-- dybw-core at `cd962fa` (`core.rev`), compiled to WebAssembly and embedded
+- dybw-core at `a3d6e0a` (`core.rev`), compiled to WebAssembly and embedded
   in `main.js` (ADR 0024 budget: 1 572 864 bytes for `main.js`).
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
@@ -665,7 +665,7 @@ Static analysis:
 
 ## 10. Verification
 
-At M6 (dybw-core `cd962fa`):
+At M6 (dybw-core `a3d6e0a`):
 
 | Suite | Command | Result |
 |---|---|---|
@@ -776,14 +776,16 @@ The setup:
   These runs use security state version 1, so new items are written field
   by field. The official CLI cannot be used here: it refuses these test
   accounts; the core's SDK check covers the format instead.
-- What Vaultwarden 1.37.5 refuses (recorded as tests, open in dybw-core):
+- What Vaultwarden 1.37.5 refuses (recorded as a test, open in dybw-core):
   a **blob** item (a new item of a COSE account at security version 2,
   ADR 0021) is answered 422 at any size, and the upload stays queued; past
-  10 000 characters the core refuses before sending. A push to an item the
-  server sends without its `secureNote` part carries the part as `null`, and
-  Vaultwarden answers 400 "Data missing"; the value stays on the device.
-  Vaultwarden itself never stores such an item. No bitwarden.com account was
-  available to check either answer there.
+  10 000 characters the core refuses before sending. No bitwarden.com
+  account was available to check that answer there.
+- A push to an item the server sends **without its `secureNote` part**:
+  Vaultwarden answers 400 "Data missing" to a part sent as `null`, so the
+  core (since `a3d6e0a`) sends an empty part (`{"type": 0}`), and the push
+  goes through. Vaultwarden itself never serves such an item, so the test
+  strips the part from the sync answers, as a server that drops it would.
 - An **organization**, created the way the web vault creates one, with a
   marked item in no folder: the plugin pulls it, pushes an edit
   encrypted with the organization key, and the item stays in its
@@ -868,8 +870,10 @@ the development Mac at M6, on the core:
   than before M6 (27 / 46 / 12 ms for the first sync of 200), since the core
   decrypts in WASM rather than through WebCrypto's async calls.
 
-Phones are typically 3–10× slower than this machine, which still leaves
-every operation well inside its budget. Unlock time is dominated by the KDF
+Phones are typically 3–10× slower than this machine. That leaves every
+operation inside its budget except the PBKDF2 unlock: WebKit's 418 ms times
+10 is about 4.2 s, over the 3 s budget, so a 600,000-iteration unlock on a
+slow phone may take several seconds with the UI frozen. Unlock time is dominated by the KDF
 the account uses, and every later sync costs one `GET /api/sync`. The
 budgets catch order-of-magnitude regressions, not noise.
 
