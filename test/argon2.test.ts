@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, inject, it, vi } from "vitest";
+// The copy of dybw-core vectors/crypto/vectors.json (byte-identical) this suite still reads.
 import vectors from "./fixtures/vectors.json";
 import {
   argon2InThread,
@@ -12,8 +13,8 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from "../src/bw/argon2";
-import { deriveMasterKey, KdfType } from "../src/bw/crypto";
-import { toBase64, utf8Encode } from "../src/bw/encoding";
+import { deriveMasterKey, KdfType } from "./helpers/bw/crypto";
+import { toBase64, utf8Encode } from "./helpers/bw/encoding";
 import { FakeBitwardenServer } from "./helpers/fakeServer";
 import { makeDevice } from "./helpers/device";
 

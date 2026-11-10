@@ -1,13 +1,16 @@
-# M6 test map (draft)
+# M6 test map
 
-Every test that M6 replaces or removes, with the test that now covers it. No row without a covering test.
-Draft: Task 9 (the controller on dybw-core) fills the controller, sync, organizations and sync-shape rows; Task 11
-adds the hub rows (done), Task 12 the `src/bw`/`src/sync` unit suites it deletes.
+Every test that M6 replaced or removed, with the test that now covers it. No row without a covering test.
+Core tests are named at dybw-core `cd962fa` (the rev in `core.rev`), paths under `crates/`; plugin tests by file
+and full name.
 
-Until Task 12 deletes `src/bw` and `src/sync`, the suites written for them keep running unchanged in
-`test/legacy/`, on a copy of the old controller (`test/legacy/controller.ts`), so that code stays covered at 100%.
-`test/engine.test.ts` and `test/integration/vaultwarden.test.ts` still use that copy (`test/legacy/device.ts`):
-the engine suite goes with `src/sync` (Task 12), the Vaultwarden suite is ported in Task 13.
+M6 removed the plugin's own Bitwarden code (`src/bw/` but the Argon2 runner and its worker, and `src/sync/`) and the
+suites written for it, with the fixtures only they read; the controller runs on the core. The core runs its
+conformance vectors and crypto known answers in WASM, in Node, Chromium and WebKit, on every CI run
+(`dybw-core-wasm/js/test/vectors.test.ts` over `runVectors`/`runKnownAnswers`), from `vectors/crypto/`, where the
+fixtures the plugin dropped live byte-identical. `test/fixtures/vectors.json` stays for the Argon2 known answer of
+`test/argon2.test.ts`; the frozen test crypto under `test/helpers/bw/` stays as the fake server's and the
+Vaultwarden account's oracle.
 
 The four "unlocking with a cancellable derivation" tests of `test/argon2.test.ts` run on the new controller, same
 file and names: the Argon2 port's abort signal is the unlock's.
@@ -35,7 +38,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 
 ## Per test
 
-### `test/controller.test.ts` (before M6; kept as `test/legacy/controller.test.ts` until Task 12)
+### `test/controller.test.ts` (before M6)
 
 | Test | Covered by |
 |---|---|
@@ -59,7 +62,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 | SecretsController > notificationsHubUrl > authenticates the hub with the current session | `test/controller.test.ts` › SecretsController > notifications hub > authenticates the hub with the current session (the core's `runHub` opens the socket with the sync's token) |
 | SecretsController > notificationsHubUrl > fails while locked, without contacting the server | `test/controller.test.ts` › SecretsController > notifications hub > fails while locked, without contacting the server |
 
-### `test/sync.test.ts` (before M6; kept as `test/legacy/sync.test.ts` until Task 12)
+### `test/sync.test.ts` (before M6)
 
 | Test | Covered by |
 |---|---|
@@ -136,7 +139,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 | with a %s account key > sync between devices > audit regressions > refuses a remembered key it cannot verify | `test/sync.test.ts`, same name, on the core |
 | with a %s account key > sync between devices > audit regressions > keeps unknown item properties when pushing | `test/sync.test.ts`, same name, on the core |
 
-### `test/organizations.test.ts` (before M6; kept as `test/legacy/organizations.test.ts` until Task 12)
+### `test/organizations.test.ts` (before M6)
 
 | Test | Covered by |
 |---|---|
@@ -171,7 +174,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 | with a %s account key > organization items > are never where new uploads go | `test/organizations.test.ts`, same name, on the core |
 | with a %s account key > account private key > refuses anything but RSA-OAEP organization keys | dybw-core `crates/dybw-core/src/crypto/rsa_mark_tests.rs::org_keys_unwrap` (types 2, 5, 6, no type, bad base64 refused) and `org_key_type_picks_the_hash` |
 
-### `test/sync-shape.test.ts` (before M6; kept as `test/legacy/sync-shape.test.ts` until Task 12)
+### `test/sync-shape.test.ts` (before M6)
 
 | Test | Covered by |
 |---|---|
@@ -179,7 +182,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 | the newer sync response, %s account key > uses the master key salt the server gives, not the email | `test/sync-shape.test.ts`, same name, on the core |
 | the newer sync response, %s account key > reads the private key from accountKeys, for organizations and the remembered key | `test/sync-shape.test.ts`, same name, on the core |
 
-### `test/notifications.test.ts` (before M6; kept as `test/legacy/notifications.test.ts` until Task 12)
+### `test/notifications.test.ts` (before M6)
 
 The hub is the core's (`runHub`, `crates/dybw-core/src/api/hub.rs`): the protocol rows are core tests in
 `crates/dybw-core/src/api/msgpack_tests.rs` and `hub_tests.rs` (dybw-core `cd962fa`); the plugin's own rows, through
@@ -216,12 +219,12 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | notifications hub client > stops for good: no reconnect and no late reports | `test/hub.test.ts`, same name, on the core, and › stops when locked, and never reconnects with the old token; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
 | notifications hub client > with timers that may still fire after being cleared > reports no change once stopped | `test/hub.test.ts` › stops for good: no reconnect and no late reports (the core checks `stop` before reporting; the plugin's `sleepMs` ends on the hub's signal) |
 | notifications hub client > with timers that may still fire after being cleared > does not reconnect once stopped | `test/hub.test.ts` › stops for good: no reconnect and no late reports; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
-| notifications hub client > with timers that may still fire after being cleared > never pings a new socket before its handshake | dybw-core `hub_tests.rs::sends_pings_while_connected` (the sans-I/O `Hub` pings only on a tick of a connected session; there is one socket at a time) |
+| notifications hub client > with timers that may still fire after being cleared > never pings a new socket before its handshake | dybw-core `dybw-core/src/api/hub_tests.rs:92` (`negotiates_messagepack_then_reports_a_change_made_elsewhere`: `on_open` sends only the handshake and pings start once it is answered) and `:501` (`run_hub_follows_a_close_from_the_server`: a socket that never finished its handshake was sent "only the handshake") |
 | notifications hub client > wakes up at once instead of waiting for the next attempt | `test/hub.test.ts`, same name, on the core (`SecretsController.wake`) |
 | notifications hub client > ignores a stale socket's events after reconnecting | `test/core/ports.test.ts` › socket ports > close closes the socket, ends a waiting recv with null and forgets the id (a closed socket's id is forgotten: its late frames reach no `recv`) |
 | notifications hub client > ignores a stale socket's open, error and close events after reconnecting | `test/core/ports.test.ts` › socket ports > close closes the socket, ends a waiting recv with null and forgets the id |
 | notifications hub client > keeps its connection when started again | `test/hub.test.ts`, same name, on the core |
-| notifications hub client > does not wake a connection that is up, or a hub that was stopped | `test/hub.test.ts` › does not wake a hub that was stopped; the first half is changed by the ruling above: › starts a connection that looks up over when woken |
+| notifications hub client > does not wake a connection that is up, or a hub that was stopped | `test/hub.test.ts` › does not wake a hub that was stopped; the first half is changed by the ruling above: › starts a connection that looks up over when woken, › keeps one connection when woken twice in a row, › stays stopped when locked right after a wake |
 | notifications hub client > opens one socket when woken while the first URL is still on its way | `test/hub.test.ts` › starts a connection that looks up over when woken (the stopped run closes its socket at its next stop check; one socket stays open) |
 | notifications hub client > does not retry for a URL request that an earlier wake superseded | `test/hub.test.ts` › starts a connection that looks up over when woken (the core reads the URL from its own keys, without a request: nothing to supersede) |
 | notifications hub client > opens no socket when stopped while the URL is on its way | `test/controller.test.ts` › SecretsController > notifications hub > fails while locked, without contacting the server; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
@@ -233,3 +236,188 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | notifications hub client > stays connected and reports nothing for %s | dybw-core `hub_tests.rs::stays_connected_and_reports_nothing_for_messages_it_does_not_act_on` |
 | notifications hub client > reconnects once when one message closes the connection twice | dybw-core `hub_tests.rs::starts_over_when_the_server_sends_close_and_reconnects_once_for_two` |
 | notifications hub client with the default timers > schedules retries on window timers and clears them on stop | `test/core/ports.test.ts` › sleepMs resolves after its time, › sleepMs ends at once on the hub's stop signal, also one aborted before, and never rejects |
+
+### `test/api.test.ts` (before M6; `src/bw/api.ts`, `src/bw/vault.ts`, `src/sync/state.ts`)
+
+| Test | Covered by |
+|---|---|
+| resolveServerUrls > maps the Bitwarden clouds and self-hosted servers | dybw-core `dybw-core/src/api/client_tests.rs::resolve_urls`, `::the_cloud_identity_origins_are_what_resolve_server_urls_maps` |
+| resolveServerUrls > refuses plain http to remote hosts and embedded credentials | dybw-core `client_tests.rs::resolve_urls`, `::origins_are_scheme_host_and_port` |
+| normalizeKeys > lower-cases the first letter of every key, recursively | dybw-core `client_tests.rs::normalize_keys_lowercases_first_letter_recursively`, `::put_reply_is_normalized` |
+| normalizeKeys from an untrusted server > never lets a __proto__ key replace an object's prototype | dybw-core `client_tests.rs::normalize_keys_lowercases_first_letter_recursively` (serde_json maps: a `__proto__` key is a key like any other; no JS object is built from a server answer any more) |
+| BitwardenApiError > recognises out-of-date edits | dybw-core `client_tests.rs::errors_shaped` (`is_out_of_date`); `test/sync.test.ts` › … retries when another device edits during the push |
+| parseScope > parses known scopes and rejects others | dybw-core `dybw-core/src/sync/engine_tests.rs::scopes_are_read_as_the_plugin_parses_them`; `test/sync.test.ts` › … respects vault and device scopes |
+| parseDeviceState > keeps the device id but drops malformed content | dybw-core `dybw-core/src/sync/state_tests.rs::drops_parts_that_are_not_of_the_right_kind`, `::a_stored_device_id_never_asks_for_a_fresh_one` |
+| parseDeviceState > drops ids that break the id rule or are reserved for the plugin | dybw-core `state_tests.rs::drops_entries_the_plugin_drops`, `::the_namespace_decides_which_ids_are_synced` |
+| parseDeviceState > keeps a confirmation to push to an organization item, and only a true one | dybw-core `state_tests.rs::drops_entries_the_plugin_drops` (a non-true `pushConfirmed` is dropped), `::plugin_state_round_trips` |
+
+### `test/api-client.test.ts` (before M6; `src/bw/api.ts`)
+
+| Test | Covered by |
+|---|---|
+| BitwardenApi > prelogin > reads PBKDF2 and Argon2id parameters | dybw-core `client_tests.rs::prelogin_parses_both_kdfs` |
+| BitwardenApi > prelogin > leaves missing Argon2id parameters at zero, for key derivation to reject | dybw-core `client_tests.rs::prelogin_parses_both_kdfs`; `dybw-core/src/crypto/tests.rs::kdf_bounds` |
+| BitwardenApi > prelogin > refuses a KDF it does not know | dybw-core `client_tests.rs::prelogin_parses_both_kdfs` |
+| BitwardenApi > loginWithApiKey > sends the client credentials and this device, then keeps the token | dybw-core `client_tests.rs::login_sends_client_credentials`, `::api_key_bound_to_origin` |
+| BitwardenApi > loginWithApiKey > assumes an hour when the server does not say how long the token lasts | dybw-core `client_tests.rs::the_token_is_renewed_a_minute_before_it_expires`, `::a_short_lived_token_lasts_a_minute` |
+| BitwardenApi > loginWithApiKey > refuses an answer without an access token | dybw-core `client_tests.rs::login_refuses_answers_without_a_token` |
+| BitwardenApi > authenticated calls > are refused before logging in, without reaching the server | dybw-core `client_tests.rs::calls_need_a_login_and_send_nothing_without` |
+| BitwardenApi > authenticated calls > are refused again once the token expired or after logging out | dybw-core `client_tests.rs::the_token_is_renewed_a_minute_before_it_expires`, `::a_failed_renewal_surfaces_and_sends_nothing_else`; `test/hub.test.ts` › stops when locked, and never reconnects with the old token |
+| BitwardenApi > authenticated calls > send the bearer token, and a JSON body only when there is one | dybw-core `client_tests.rs::calls_need_a_login_and_send_nothing_without`, `::writes_name_their_owner_and_encode_ids` |
+| BitwardenApi > sync > fills in missing lists and learns the account id for later writes | dybw-core `client_tests.rs::sync_needs_a_profile_id`, `::writes_name_their_owner_and_encode_ids` |
+| BitwardenApi > sync > refuses a response with %s (no profile, no account key, an empty body) | dybw-core `client_tests.rs::sync_needs_a_profile_id`; `dybw-vectors/tests/accounts.rs::partial_unlock_data_without_profile_key_is_incomplete` |
+| BitwardenApi > sync > finds the account key where newer servers put it | dybw-core `accounts.rs::unlock_from_user_decryption_only`; `test/sync-shape.test.ts` › … unlocks and syncs with the keys where newer servers put them |
+| BitwardenApi > refuses to write an item before a sync told it whose vault this is | dybw-core `client_tests.rs::writes_name_their_owner_and_encode_ids` |
+| BitwardenApi > errors from the server > quotes what the server says, marked as coming from it | dybw-core `client_tests.rs::errors_shaped`, `::server_text_is_joined_cleaned_and_clipped`; `test/integration/vaultwarden.test.ts` › … pushes to an item the server sends without its secure note part (a real server's text in the report) |
+| BitwardenApi > errors from the server > joins several messages and collapses whitespace | dybw-core `client_tests.rs::server_text_is_joined_cleaned_and_clipped` |
+| BitwardenApi > errors from the server > clips long server text | dybw-core `client_tests.rs::errors_shaped`, `::server_text_is_joined_cleaned_and_clipped` |
+| BitwardenApi > errors from the server > gives only the status for %s | dybw-core `client_tests.rs::bodies_that_are_not_json_give_only_the_status` |
+
+### `test/crypto.test.ts` (before M6; `src/bw/crypto.ts`)
+
+| Test | Covered by |
+|---|---|
+| key derivation (known answers) > PBKDF2 master key, stretched key and password hash | dybw-core `dybw-core/src/crypto/tests.rs::master_keys_match_kat` (same `vectors/crypto/vectors.json`), and in WASM `dybw-core-wasm/js/test/vectors.test.ts` (`runKnownAnswers`) |
+| key derivation (known answers) > Argon2id master key and stretched key | dybw-core `tests.rs::master_keys_match_kat`; `test/argon2.test.ts` › Argon2 in a worker > derives the known-answer key in a real worker / in the embedded worker, as shipped |
+| EncString > decrypts the protected user key with the stretched key | dybw-core `tests.rs::master_keys_match_kat`, `dybw-vectors/tests/accounts.rs::unlock_pbkdf2` |
+| EncString > decrypts reference ciphertexts and round-trips its own | dybw-core `tests.rs::enc_strings_match_kat`, `::round_trip` |
+| EncString > uses a fresh IV for every encryption | dybw-core `tests.rs::rng_and_key_ref` (every IV comes from the host's `random`); `dybw-core-wasm/src/tests.rs::random_fills_large_buffers_in_chunks` |
+| EncString > rejects tampered data, wrong keys and unauthenticated types | dybw-core `tests.rs::malformed_and_unsupported_inputs`, `::round_trip` (wrong key: `BadMac`) |
+| EncString > names no type when the string has none | dybw-core `tests.rs::malformed_and_unsupported_inputs` |
+| EncString > rejects type 2 parts of the wrong size before checking the MAC | dybw-core `tests.rs::malformed_and_unsupported_inputs` (IV, MAC and part counts) |
+| EncString > reports data that passes the MAC but does not decrypt | dybw-core `tests.rs::bad_padding_is_decrypt_error`, `::round_trip` (non-UTF-8 text) |
+| EncString > refuses legacy data under a COSE key | dybw-core `dybw-core/src/crypto/cose_tests.rs::key_types_cross_decrypt` |
+| key wrapping > wraps a COSE key under a COSE key as a COSE key | dybw-core `cose_tests.rs::key_types_cross_decrypt` |
+| key wrapping > wraps a key under a legacy key in its byte format | dybw-core `tests.rs::round_trip` (`decrypt_key` of a wrapped key) |
+| key wrapping > has no COSE form for a legacy key | dybw-core `cose_tests.rs::key_types_cross_decrypt` (content kinds are not interchangeable) |
+| AccountPrivateKey > reports a private key that is not PKCS#8 | dybw-core `dybw-core/src/crypto/rsa_mark_tests.rs::pkcs8_has_its_own_decrypt`; `dybw-core/src/vault/orgs_tests.rs::a_missing_or_unreadable_private_key_is_a_problem_per_organization`; `test/core/ports.test.ts` (rsaOaepDecrypt rejects an unimportable key with `key`) |
+| cancelling the key derivation > does not start when already cancelled | `test/controller.test.ts` › SecretsController > unlock > stops before deriving the key when cancelled; `test/argon2.test.ts` › Argon2 on the calling thread > refuses to start when already aborted |
+| cancelling the key derivation > discards a PBKDF2 key cancelled while it was derived | `test/controller.test.ts` › SecretsController > unlock > lets a lock that arrives while the key is derived win; dybw-core `dybw-core-wasm/src/tests.rs::lock_wins_over_a_running_unlock` |
+| KDF bounds > refuses downgraded or abusive parameters | dybw-core `tests.rs::kdf_bounds`; `accounts.rs::accept_kdf_refuses_out_of_bounds_params`, `::out_of_range_kdf_names_its_source` |
+| SymmetricKey > wipes its raw material | dybw-core `tests.rs::debug_and_errors_are_redacted` (keys are `Zeroizing`, never printed); the WASM instance wipes on `lock` (`dybw-core-wasm/src/tests.rs::a_session_unlocks_and_locks`) |
+| SymmetricKey > rejects keys of the wrong size | dybw-core `tests.rs::malformed_and_unsupported_inputs` (`from_bytes(&[0; 63])`), `cose_tests.rs::aead_inputs` |
+| ValueFingerprinter > is deterministic per key and binds the id | dybw-core `rsa_mark_tests.rs::marks_match_kat`, `::marks_on_cose_keys_and_subkeys` |
+
+### `test/cose.test.ts` (before M6; `src/bw/cose.ts`, `cbor.ts`, `aead.ts`)
+
+The two `EncString type 7` groups ran once per account of `cose-vectors.json` (XAES-256-GCM, XChaCha20-Poly1305);
+the core reads the same file (`vectors/crypto/cose-vectors.json`, byte-identical).
+
+| Test | Covered by |
+|---|---|
+| XAES-256-GCM (C2SP test vectors) > key 0x%i… | dybw-core `cose_tests.rs::xaes_c2sp` (the same two vectors) |
+| AEAD inputs > refuse keys that are not 32 bytes | dybw-core `cose_tests.rs::aead_inputs` |
+| AEAD inputs > refuse nonces that are not 24 bytes | dybw-core `cose_tests.rs::aead_inputs` |
+| AEAD inputs > refuse a tampered XChaCha20-Poly1305 ciphertext | dybw-core `cose_tests.rs::xchacha_round_trip_and_tamper` |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > unlocks the account key with the master password | dybw-core `dybw-vectors/tests/accounts.rs::unlock_v2`, `::cose_v2_unlocks_with_version_2`; `test/sync.test.ts` (COSE accounts) › … unlock |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > encodes COSE keys byte for byte like the SDK | dybw-core `cose_tests.rs::cose_vectors_decrypt` (`to_bytes` equals the SDK's key), `::cose_pad_and_key_errors` (`encode_cose_key`) |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > decrypts strings, padded or not | dybw-core `cose_tests.rs::cose_vectors_decrypt` |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > unwraps legacy and COSE item keys, and decrypts with them | dybw-core `cose_tests.rs::cose_vectors_decrypt` (`itemKeys`, both kinds) |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > unwraps the private key, which then reads organization keys | dybw-core `cose_tests.rs::cose_vectors_decrypt` (`privateKey`); `orgs_tests.rs::real_rsa_on_the_vectors_account` |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > round-trips what the plugin encrypts | dybw-core `cose_tests.rs::cose_round_trip`; the SDK reads it back: `dybw-vectors/tests/sdk.rs::bitwarden_sdk_decrypts_strings_and_wrapped_keys_the_core_produced` (CI `sdk` job) |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > refuses a message for another key or of another kind | dybw-core `cose_tests.rs::cose_decrypt_refuses_wrong_key_and_shape`, `::key_types_cross_decrypt` |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > refuses tampered messages | dybw-core `cose_tests.rs::cose_decrypt_refuses_wrong_key_and_shape`, `::xchacha_round_trip_and_tamper`, `::xaes_c2sp` |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > refuses messages of the wrong shape | dybw-core `cose_tests.rs::cose_decrypt_refuses_wrong_key_and_shape` |
+| EncString type 7, %s (vectors from Bitwarden's SDK) > refuses a message with a missing or unknown content type | dybw-core `cose_tests.rs::cose_decrypt_refuses_wrong_key_and_shape` (missing or unknown content type) |
+| COSE keys > only allow the operations they list | dybw-core `cose_tests.rs::cose_pad_and_key_errors` |
+| COSE keys > reject malformed keys | dybw-core `cose_tests.rs::cose_pad_and_key_errors`, `::aead_inputs` |
+| COSE keys > allow no operation when they list none | dybw-core `cose_tests.rs::cose_pad_and_key_errors` (no `key_ops` allows nothing) |
+| COSE keys > use the SDK's padding | dybw-core `cose_tests.rs::cose_pad_and_key_errors` (`pad`/`unpad`) |
+| COSE keys > keep their kind when remembered | dybw-core `accounts.rs::a_remembered_cose_key_unlocks_with_its_security_state`; `test/sync.test.ts` (COSE accounts) › … remembers the key only when asked, and drops a stale one |
+| CBOR decoder > rejects %s | dybw-core `cose_tests.rs::cbor_rejects` |
+| CBOR decoder > keeps a truncated text string a truncation, not a UTF-8 error | dybw-core `cose_tests.rs::cbor_rejects` |
+| CBOR decoder > reads integers beyond 2^53 as bigints | dybw-core `cose_tests.rs::cbor_round_trip_shortest` (`u64::MAX`, the full 64-bit range) |
+| CBOR decoder > rejects a %s longer than 2^53 bytes | dybw-core `cose_tests.rs::cbor_huge_array_header_fails_without_allocating`, `::cbor_rejects` |
+| CBOR decoder > reads the simple values false, true and null | dybw-core `cose_tests.rs::cbor_round_trip_shortest` |
+| CBOR decoder > rejects deep nesting | dybw-core `cose_tests.rs::cbor_rejects` |
+| CBOR decoder > round-trips the values COSE uses | dybw-core `cose_tests.rs::cbor_round_trip_shortest`; `dybw-core/src/crypto/cbor.rs` tests `encoded_len_matches_encode` |
+| CBOR decoder > refuses to encode what it cannot represent | dybw-core `cose_tests.rs::cbor_round_trip_shortest` (the Rust `Cbor` type holds only integers COSE uses; no float or wider value can be built) |
+
+### `test/plan.test.ts` (before M6; `src/sync/plan.ts`)
+
+One to one with dybw-core `dybw-core/src/sync/plan_tests.rs` (the planner was ported from this suite).
+
+| Test | Covered by |
+|---|---|
+| planSync > pulls a new remote secret onto a fresh device | `plan_tests.rs::pulls_a_new_remote_secret_onto_a_fresh_device` |
+| planSync > adopts a remote secret whose value already matches locally | `plan_tests.rs::adopts_a_remote_secret_whose_value_already_matches_locally` |
+| planSync > does nothing when neither side changed | `plan_tests.rs::does_nothing_when_neither_side_changed` |
+| planSync > pulls remote edits and pushes local edits | `plan_tests.rs::pulls_remote_edits_and_pushes_local_edits` |
+| planSync > only refreshes the base when the item changed but the value did not | `plan_tests.rs::only_refreshes_the_base_when_the_item_changed_but_the_value_did_not` |
+| planSync > treats a replaced Bitwarden item as a remote change | `plan_tests.rs::treats_a_replaced_item_as_a_remote_change` |
+| planSync > restores a secret missing on this device instead of deleting it remotely | `plan_tests.rs::restores_a_secret_missing_on_this_device_instead_of_deleting_it_remotely` |
+| planSync > detects both-changed conflicts, and converges when both made the same edit | `plan_tests.rs::detects_both_changed_and_converges_when_both_made_the_same_edit` |
+| planSync > applies the conflict policy | `plan_tests.rs::applies_the_conflict_policy` |
+| planSync > flags an unsynced local value that differs from a new remote one | `plan_tests.rs::flags_an_unsynced_local_value_that_differs_from_a_new_remote_one` |
+| planSync > clears locally when deleted remotely, unless edited here | `plan_tests.rs::clears_locally_when_deleted_remotely_unless_edited_here` |
+| planSync > clears an edited secret deleted remotely only when the policy prefers Bitwarden | `plan_tests.rs::clears_an_edited_secret_deleted_remotely_only_when_the_policy_prefers_bitwarden` |
+| planSync > treats a queued upload meeting a new remote item of the same id as a both-changed conflict | `plan_tests.rs::a_queued_upload_meeting_a_new_remote_item_of_the_same_id_is_both_changed` |
+| planSync > creates only what the user queued | `plan_tests.rs::creates_only_what_the_user_queued` |
+| planSync > is deterministic (sorted by id) | `plan_tests.rs::is_deterministic_sorted_by_id` |
+| planSync > honours per-secret overrides | `plan_tests.rs::honours_per_secret_overrides`, `::an_override_for_another_kind_is_ignored` |
+| planSync > organization items claiming an id > always asks before a pending or unsynced local value meets a new organization item | `plan_tests.rs::always_asks_before_a_pending_or_unsynced_local_value_meets_a_new_organization_item` |
+| planSync > organization items claiming an id > always asks when an organization item replaces the item a secret was synced with | `plan_tests.rs::always_asks_when_an_organization_item_replaces_the_item_a_secret_was_synced_with` |
+| planSync > organization items claiming an id > asks even when the values match or the local value is gone, so the id is never bound without consent | `plan_tests.rs::asks_even_when_the_values_match_or_the_local_value_is_gone` |
+| planSync > organization items claiming an id > keeps a local value as a new personal item, never pushing it to the organization | `plan_tests.rs::keeps_a_local_value_as_a_new_personal_item_never_pushing_it_to_the_organization` |
+| planSync > organization items claiming an id > still pulls onto an empty device and pushes to the organization item it synced with | `plan_tests.rs::still_pulls_onto_an_empty_device_and_pushes_to_the_organization_item_it_synced_with` |
+| planSync > the first push to an organization item > is always asked, whatever the policy | `plan_tests.rs::the_first_push_to_an_organization_item_is_always_asked_whatever_the_policy` |
+| planSync > the first push to an organization item > is asked when prefer-local settles a both-changed conflict | `plan_tests.rs::the_first_push_is_asked_when_prefer_local_settles_a_both_changed_conflict` |
+| planSync > the first push to an organization item > pushes, marked as confirmed, only once the user agreed to it | `plan_tests.rs::pushes_marked_confirmed_only_once_the_user_agreed` |
+| planSync > the first push to an organization item > never asks for personal items | `plan_tests.rs::never_asks_for_personal_items` |
+
+### `test/engine.test.ts` (before M6; `src/sync/engine.ts`)
+
+| Test | Covered by |
+|---|---|
+| runSync > stops before the next item once cancelled, leaving it untouched | dybw-core `dybw-core/src/sync/engine_tests.rs::stops_before_the_next_action_once_cancelled`, `::a_sync_cancelled_while_reading_writes_nothing`; `test/sync.test.ts` › … audit regressions > stops a running sync when locked |
+| the engine, given actions the planner should never return > ignores a pull or push for an id it read no item for | dybw-core `engine_tests.rs::ignores_a_pull_push_or_adopt_for_an_id_it_read_no_item_for` |
+| the engine, given actions the planner should never return > never pushes for a secret this device does not hold | dybw-core `engine_tests.rs::never_pushes_or_creates_for_a_secret_this_device_does_not_hold` |
+| the engine, given actions the planner should never return > refuses to push to an organization item the secret was not synced with, even confirmed | dybw-core `engine_tests.rs::refuses_to_push_to_an_organization_item_the_secret_was_not_synced_with_even_confirmed` |
+| the engine, given actions the planner should never return > refuses a confirmed push when the organization's key is not at hand | dybw-core `engine_tests.rs::keeps_a_secret_whose_item_key_or_value_can_no_longer_be_read` (an item of an organization this device has no key for is kept, never written), `orgs_tests.rs::organizations_not_allowed_are_never_unwrapped`, `write_tests.rs::organization_items_use_the_organization_key` |
+| the engine, given actions the planner should never return > refuses the first push to an organization item without the user's confirmation | dybw-core `engine_tests.rs::refuses_the_first_push_to_an_organization_item_without_confirmation` |
+
+### `test/state.test.ts` (before M6; `src/sync/state.ts`)
+
+| Test | Covered by |
+|---|---|
+| parseDeviceState > makes up a device id when the stored one is missing or empty | dybw-core `state_tests.rs::makes_up_a_device_id_when_the_stored_one_is_missing_or_empty`; `test/core/ports.test.ts` (the `device` key falls back to the state's `deviceId`) |
+| parseDeviceState > starts fresh from a state of another version, keeping only the device id | dybw-core `state_tests.rs::starts_fresh_from_a_state_of_another_version_keeping_only_the_device_id` |
+| parseDeviceState > drops parts that are not of the right kind | dybw-core `state_tests.rs::drops_parts_that_are_not_of_the_right_kind` |
+| resetDeviceState > forgets what was synced and queued, but keeps the device id | dybw-core `state_tests.rs::reset_forgets_what_was_synced_and_queued_but_keeps_the_device_id`; `test/controller.test.ts` › SecretsController > resetState > forgets the sync state but keeps the device id |
+
+### `test/vault.test.ts` (before M6; `src/bw/vault.ts`)
+
+| Test | Covered by |
+|---|---|
+| unlockUserKey > salts the master key with the email unless given another salt | dybw-core `dybw-vectors/tests/accounts.rs::unlock_uses_the_server_salt`, `::source_two_uses_prelogin_and_email`; `test/sync-shape.test.ts` › … uses the master key salt the server gives, not the email |
+
+### `test/vectors/vectors.test.ts` (before M6; opt-in `npm run test:vectors`)
+
+| Test | Covered by |
+|---|---|
+| dybw conformance vectors (obsidian) > (each vector) | dybw-core `dybw-vectors/tests/vectors.rs::every_vector_runs` (native) and `dybw-core-wasm/src/tests.rs::every_vector_runs_over_the_host` with `dybw-core-wasm/js/test/vectors.test.ts` (the shipped module in Node, Chromium and WebKit); the plugin's 25 expected failures are 0 in the core |
+| dybw conformance vectors (obsidian) > expected-failures.txt lists only existing vectors | dybw-core `vectors.rs::expected_failures_list_existing_vectors` |
+| conformance vectors (fails when no vectors directory is given) | dybw-core `vectors.rs::vectors_found` |
+
+### `test/sdk/verify.test.ts` (before M6; opt-in `npm run test:sdk`)
+
+| Test | Covered by |
+|---|---|
+| accepted by Bitwarden's SDK > decrypts strings and wrapped keys the plugin produced | dybw-core `dybw-vectors/tests/sdk.rs::bitwarden_sdk_decrypts_strings_and_wrapped_keys_the_core_produced` (the core encrypts what the plugin uploads; CI `sdk` job, locally `cargo test -p dybw-vectors --test sdk --locked -- --ignored`) |
+
+### `test/perf/perf.test.ts`
+
+| Test | Covered by |
+|---|---|
+| performance > PBKDF2-SHA256, 600,000 iterations (Bitwarden default) | `test/perf/perf.test.ts` › performance > PBKDF2-SHA256, 600,000 iterations (Bitwarden default), as an unlock in the core (row `pbkdf2-600k`, same budget); dybw-core `runPerf` row `pbkdf2-600k` |
+| performance > Argon2id, 64 MiB / 3 iterations / 4 lanes (Bitwarden default) | `test/perf/perf.test.ts`, same name, on the Argon2 runner the core's `argon2id` port calls |
+| performance > decrypts 1,000 marked secrets inside a 5,000-item vault | `test/perf/perf.test.ts` › performance > decrypts 1,000 marked secrets inside a 5,000-item vault, as a first sync (row `decrypt-1000-of-5000`, same budget, end to end); dybw-core `runPerf` row `decrypt-1000-of-5000` |
+| performance > plans a 10,000-secret sync | dybw-core `runPerf` row `plan-10000` (`dybw-core-wasm/js/test/perf.test.ts`, same 500 ms budget in Node, Chromium and WebKit; ruling D11: the shipped module has no planner-only export) |
+
+### `test/integration/vaultwarden.test.ts`
+
+Every test kept under its name, on the core's controller (`test/helpers/device.ts`), the hub through `startHub`.
+Added: › follows redirects only for a server acknowledged on the device (ADR 0018), › pushes to an item the server
+sends without its secure note part: Vaultwarden refuses the push, › writes a new item of a COSE account at security
+version 2 as a blob: Vaultwarden refuses it at any size. The two COSE runs use security state version 1: Vaultwarden
+1.37.5 refuses blob items (the last test).

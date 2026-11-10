@@ -8,7 +8,7 @@ export default defineConfig({
   plugins: [coreWasm()],
   test: {
     include: ["test/**/*.test.ts"],
-    exclude: ["test/integration/**", "test/sdk/**", "test/vectors/**"],
+    exclude: ["test/integration/**"],
     globalSetup: ["test/setup/argon2-worker.ts"],
     testTimeout: 60_000,
     browser: {

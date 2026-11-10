@@ -5,8 +5,7 @@ export default defineConfig({
   plugins: [coreWasm()],
   test: {
     include: ["test/**/*.test.ts"],
-    // The conformance vectors are opt-in: `npm run test:vectors`.
-    exclude: ["test/integration/**", "test/vectors/**"],
+    exclude: ["test/integration/**"],
     testTimeout: 30_000,
     // `npm run test:coverage` (CI and releases) fails below 100% for the code
     // that runs without Obsidian. Left out: main.ts and ui.ts, the glue that
