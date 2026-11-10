@@ -1,6 +1,7 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting } from "obsidian";
 import { KdfAbortedError } from "./bw/argon2";
-import type { ConflictInfo, ConflictOverride, Scope, SyncReport } from "./controller";
+import type { ConflictInfo, ConflictOverride, HistoryAnswer, Scope, SyncReport } from "./controller";
+import { HISTORY_CHOICES, HISTORY_TEXT, historyAnswers, type Question } from "./questions";
 
 export class UnlockModal extends Modal {
   private busy = false;
@@ -198,16 +199,92 @@ export class PickScopeModal extends FuzzySuggestModal<ScopeChoice> {
   }
 }
 
-export function summarize(report: SyncReport): string {
-  const parts: string[] = [];
-  if (report.pulled.length) parts.push(`${report.pulled.length} updated`);
-  if (report.pushed.length) parts.push(`${report.pushed.length} uploaded`);
-  if (report.created.length) parts.push(`${report.created.length} added to Bitwarden`);
-  if (report.cleared.length) parts.push(`${report.cleared.length} cleared`);
-  if (report.conflicts.length) parts.push(`${report.conflicts.length} conflict(s)`);
-  if (report.skipped.length) parts.push(`${report.skipped.length} item(s) skipped`);
-  if (report.errors.length) parts.push(`${report.errors.length} error(s)`);
-  // The core's own sentences (kept changing, held, rollbacks, …), counts only.
-  parts.push(...report.warnings);
-  return parts.length ? parts.join(", ") : "everything is up to date";
+/** A yes/no question of the core's (questions.ts); resolves true only when the user accepted. */
+export function ask(app: App, q: Question): Promise<boolean> {
+  return new Promise((resolve) => new QuestionModal(app, q, resolve).open());
+}
+
+class QuestionModal extends Modal {
+  private accepted = false;
+
+  constructor(
+    app: App,
+    private readonly question: Question,
+    private readonly onAnswer: (accepted: boolean) => void,
+  ) {
+    super(app);
+  }
+
+  override onOpen(): void {
+    this.setTitle(this.question.title);
+    for (const line of this.question.text.split("\n")) this.contentEl.createEl("p", { text: line });
+    new Setting(this.contentEl)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((b) =>
+        b
+          .setButtonText(this.question.accept)
+          .onClick(() => {
+            this.accepted = true;
+            this.close();
+          }),
+      );
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
+    this.onAnswer(this.accepted);
+  }
+}
+
+/** ADR 0016: one answer per item, or none ("Decide later", the cancel: nothing is written). */
+export class HistoryModal extends Modal {
+  private readonly picks = new Map<string, HistoryAnswer["answer"]>();
+
+  constructor(
+    app: App,
+    private readonly questions: SyncReport["questions"],
+    private readonly onAnswer: (answers: Map<string, HistoryAnswer>) => Promise<void>,
+  ) {
+    super(app);
+  }
+
+  override onOpen(): void {
+    this.setTitle("Write to a login's password?");
+    const { contentEl } = this;
+    contentEl.createEl("p", {
+      text: "Keeping the app's value separate adds a hidden field with it; the login password, its history and the notes stay untouched.",
+    });
+    for (const q of this.questions) {
+      new Setting(contentEl)
+        .setName(q.label === q.id ? q.id : `${q.label} (${q.id})`)
+        .setDesc(HISTORY_TEXT[q.question])
+        .addDropdown((d) => {
+          d.addOption("", "Decide later");
+          for (const [answer, text] of Object.entries(HISTORY_CHOICES)) d.addOption(answer, text);
+          d.onChange((v) => {
+            if (v) this.picks.set(q.id, v as HistoryAnswer["answer"]);
+            else this.picks.delete(q.id);
+          });
+        });
+    }
+    new Setting(contentEl).addButton((b) =>
+      b
+        .setButtonText("Apply")
+        .setCta()
+        .onClick(async () => {
+          b.setDisabled(true);
+          try {
+            if (this.picks.size) await this.onAnswer(historyAnswers(this.questions, this.picks));
+            this.close();
+          } catch (e) {
+            new Notice(`Bitwarden: ${(e as Error).message}`);
+            b.setDisabled(false);
+          }
+        }),
+    );
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
+  }
 }

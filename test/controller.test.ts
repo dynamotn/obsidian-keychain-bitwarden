@@ -270,6 +270,22 @@ describe("SecretsController", () => {
       expect(server.ciphers.find((c) => c.id === login.id)!.revisionDate).not.toBe(login.revisionDate);
     });
 
+    it("accepts the server's versions in a sync queued behind a running one", async () => {
+      const c = await server.addItem({ name: "k", value: "old" });
+      const old = c.revisionDate;
+      await a.controller.sync();
+      await server.editValue(c.id, "new");
+      await a.controller.sync();
+      await server.editValue(c.id, "old");
+      c.revisionDate = old;
+      const first = a.controller.sync();
+      const second = a.controller.sync(undefined, undefined, true);
+      const [r1, r2] = await Promise.all([first, second]);
+      expect(r1.rollbacks).toHaveLength(1);
+      expect(r2.rollbacks).toEqual([]);
+      expect(a.store.get("k")).toBe("old");
+    });
+
     it("syncs once more after a value typed during the sync, and only once", async () => {
       const first = await server.addItem({ name: "a-first", value: "1" });
       const second = await server.addItem({ name: "b-second", value: "1" });
@@ -470,6 +486,8 @@ describe("SecretsController", () => {
       d.controller.cancelUnlock();
       d.controller.lock();
       expect(lock).not.toHaveBeenCalled();
+      // The reload notice stays what the status says.
+      expect(d.controller.status).toBe("error");
       void stuck.catch(() => undefined);
       void queued.catch(() => undefined);
     });

@@ -4,15 +4,19 @@ import { argon2InThreadUpTo, argon2InWorker, IN_THREAD_MAX_MEMORY_KIB, type Argo
 import {
   SECRET_CLIENT_ID,
   SECRET_CLIENT_SECRET,
+  isSelfHosted,
   needsNotice,
   SecretsController,
+  summarize,
   type ConflictOverride,
   type ConflictPolicy,
+  type HistoryAnswer,
   type Status,
   type SyncReport,
   type UnlockSummary,
 } from "./controller";
-import { ConflictModal, PickScopeModal, PickSecretModal, summarize, UnlockModal } from "./ui";
+import { ORIGIN_NAME, ORIGIN_TEXT, rollbackQuestion, syncQuestion, unlockAsking } from "./questions";
+import { ask, ConflictModal, HistoryModal, PickScopeModal, PickSecretModal, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
 const SETTINGS_KEY = "keychain-bitwarden:settings";
@@ -151,7 +155,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
   private async startup(): Promise<void> {
     if (!this.settings.email || !this.settings.rememberKey) return;
     try {
-      const summary = await this.controller.unlockFromRememberedKey();
+      const summary = await this.unlockAsking(() => this.controller.unlockFromRememberedKey());
       if (!summary) return;
       this.showUnlockSummary(summary);
       await this.syncNow(false);
@@ -170,13 +174,18 @@ export default class KeychainBitwardenPlugin extends Plugin {
     new UnlockModal(
       this.app,
       async (password) => {
-        this.showUnlockSummary(await this.controller.unlock(password));
+        this.showUnlockSummary(await this.unlockAsking(() => this.controller.unlock(password)));
         this.lastActivity = Date.now();
         await this.syncNow(true);
       },
       // Closing the dialog stops the key derivation instead of letting it finish unseen.
       () => this.controller.cancelUnlock(),
     ).open();
+  }
+
+  /** `unlock`, asking the core's questions (self-hosted origin, weaker KDF, older security state) and retrying. */
+  private unlockAsking<T>(unlock: () => Promise<T>): Promise<T> {
+    return unlockAsking(unlock, this.controller, (q) => ask(this.app, q));
   }
 
   /** What the unlock found worth knowing: organizations it could not read, weak KDF settings. */
@@ -186,7 +195,12 @@ export default class KeychainBitwardenPlugin extends Plugin {
     if (lines.length) new Notice(`Bitwarden: ${lines.join("\n")}`, 10_000);
   }
 
-  async syncNow(verbose: boolean, overrides?: Map<string, ConflictOverride>): Promise<void> {
+  async syncNow(
+    verbose: boolean,
+    overrides?: Map<string, ConflictOverride>,
+    answers?: Map<string, HistoryAnswer>,
+    acceptRollback = false,
+  ): Promise<void> {
     if (!this.controller.isUnlocked) {
       if (verbose) this.openUnlock();
       return;
@@ -194,14 +208,24 @@ export default class KeychainBitwardenPlugin extends Plugin {
     if (verbose) this.lastActivity = Date.now();
     this.lastSync = Date.now();
     try {
-      const report = await this.controller.sync(overrides);
+      const report = await this.controller.sync(overrides, answers, acceptRollback);
       this.lastReport = report;
       if (verbose || needsNotice(report)) {
         new Notice(`Bitwarden: ${summarize(report)}`);
       }
       for (const err of report.errors) console.warn("[keychain-bitwarden]", `${err.id}: ${err.error}`);
       for (const s of report.skipped) console.debug("[keychain-bitwarden] skipped", s.cipherId, s.reason);
-      if (report.conflicts.length && this.settings.conflictPolicy === "ask" && verbose) this.openConflicts();
+      for (const h of report.held) console.debug("[keychain-bitwarden] held", h.id, h.cipherId);
+      for (const u of report.unknownFeatures) console.debug("[keychain-bitwarden] needs", u.cipherId, u.features.join(", "));
+      const question = verbose ? syncQuestion(report, this.settings.conflictPolicy) : null;
+      if (question === "conflicts") this.openConflicts();
+      else if (question === "history") new HistoryModal(this.app, report.questions, (a) => this.syncNow(true, undefined, a)).open();
+      // Not awaited: the dialog that asked for this sync (unlock, conflicts) closes meanwhile.
+      else if (question === "rollbacks") {
+        void ask(this.app, rollbackQuestion(report)).then((ok) => {
+          if (ok) void this.syncNow(true, undefined, undefined, true);
+        });
+      }
     } catch (e) {
       new Notice(`Bitwarden: ${(e as Error).message}`, 10_000);
     }
@@ -268,6 +292,7 @@ class SettingsTab extends PluginSettingTab {
           .onChange(async (v) => {
             p.settings.serverUrl = v.trim();
             await p.saveSettings();
+            acknowledged.settingEl.toggle(isSelfHosted(p.settings.serverUrl));
           }),
       );
     new Setting(containerEl).setName("Email").addText((t) =>
@@ -305,6 +330,22 @@ class SettingsTab extends PluginSettingTab {
       SECRET_CLIENT_SECRET,
       "clientSecret",
     );
+    // ADR 0018: only a self-hosted server needs it; the toggle reads the core once it answers.
+    const acknowledged = new Setting(containerEl)
+      .setName(ORIGIN_NAME)
+      .setDesc(`${ORIGIN_TEXT} Turning it off locks Bitwarden.`)
+      .addToggle((t) => {
+        p.controller.originAcknowledged().then(
+          (on) =>
+            t.setValue(on).onChange((v) => {
+              (v ? p.controller.acknowledgeOrigin() : p.controller.forgetOrigin()).catch((e: unknown) =>
+                new Notice(`Bitwarden: ${(e as Error).message}`),
+              );
+            }),
+          () => undefined,
+        );
+      });
+    acknowledged.settingEl.toggle(isSelfHosted(p.settings.serverUrl));
 
     new Setting(containerEl).setName("Sync").setHeading();
     new Setting(containerEl)

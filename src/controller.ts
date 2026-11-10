@@ -4,7 +4,7 @@
 
 import { WasmSession } from "../vendor/dybw-core/dybw_core_wasm.js";
 import { KdfAbortedError } from "./bw/argon2";
-import { InvalidError, LockedError, parseCoreError, WrongPasswordError } from "./core/errors";
+import { InvalidError, LockedError, parseCoreError, WrongPasswordError, type Kdf } from "./core/errors";
 import { coreLoader } from "./core/load";
 import { hostPorts, type PortDeps } from "./core/ports";
 
@@ -140,6 +140,8 @@ function organizationName(raw: string | null, id: string): string {
   return chars.length > ORGANIZATION_NAME_MAX ? `${chars.slice(0, ORGANIZATION_NAME_MAX - 1).join("")}…` : name;
 }
 
+const CLOUD = ["com", "eu"];
+
 /** The identity origin the server URL logs in at, as the core resolves it (Bitwarden cloud has its own). */
 function identityOrigin(serverUrl: string): string {
   const raw = serverUrl.trim() || "https://vault.bitwarden.com";
@@ -149,7 +151,7 @@ function identityOrigin(serverUrl: string): string {
   } catch {
     throw new Error(`Invalid server URL: ${raw}`);
   }
-  for (const cloud of ["com", "eu"]) {
+  for (const cloud of CLOUD) {
     if (url.hostname === `vault.bitwarden.${cloud}` || url.hostname === `bitwarden.${cloud}`) {
       return `https://identity.bitwarden.${cloud}`;
     }
@@ -157,10 +159,33 @@ function identityOrigin(serverUrl: string): string {
   return url.origin;
 }
 
+/** ADR 0018: a server whose identity origin is not Bitwarden cloud's must be acknowledged on the device. */
+export function isSelfHosted(serverUrl: string): boolean {
+  try {
+    return !CLOUD.some((cloud) => identityOrigin(serverUrl) === `https://identity.bitwarden.${cloud}`);
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a sync the user did not ask for is worth a notice: it changed something, or the core has something to say. */
 export function needsNotice(report: SyncReport): boolean {
   const changed = report.pulled.length + report.pushed.length + report.created.length + report.cleared.length;
   return changed + report.conflicts.length + report.errors.length + report.warnings.length > 0;
+}
+
+/** The sync notice: what changed, then the core's own sentences (held, unknown features, rollbacks, …), counts only. */
+export function summarize(report: SyncReport): string {
+  const parts: string[] = [];
+  if (report.pulled.length) parts.push(`${report.pulled.length} updated`);
+  if (report.pushed.length) parts.push(`${report.pushed.length} uploaded`);
+  if (report.created.length) parts.push(`${report.created.length} added to Bitwarden`);
+  if (report.cleared.length) parts.push(`${report.cleared.length} cleared`);
+  if (report.conflicts.length) parts.push(`${report.conflicts.length} conflict(s)`);
+  if (report.skipped.length) parts.push(`${report.skipped.length} item(s) skipped`);
+  if (report.errors.length) parts.push(`${report.errors.length} error(s)`);
+  parts.push(...report.warnings);
+  return parts.length ? parts.join(", ") : "everything is up to date";
 }
 
 const scopeText = (scope: Scope) => (scope.kind === "vault" ? `vault:${scope.name}` : scope.kind);
@@ -174,6 +199,7 @@ export class SecretsController {
   private queued: Promise<SyncReport> | null = null;
   private queuedOverrides: Map<string, ConflictOverride> | undefined;
   private queuedAnswers: Map<string, HistoryAnswer> | undefined;
+  private queuedRollback = false;
   /** Calls that take the core's keys out run one after another: the core answers `busy` otherwise. */
   private tail: Promise<unknown> = Promise.resolve();
   /** Bumped on every lock; an unlock or sync started under an older generation stops. */
@@ -392,7 +418,37 @@ export class SecretsController {
     this.stopHub();
     this.session?.lock();
     this.unlocked = false;
-    this.setStatus("locked");
+    // After a trap the status keeps saying why, and to reload.
+    if (!this.trapped) this.setStatus("locked");
+  }
+
+  /** ADR 0017: the user confirmed, on this device, the weaker KDF the server offers. */
+  acceptKdf(kdf: Kdf, origin: string): Promise<void> {
+    return this.call((session) => session.acceptKdf(JSON.stringify(kdf), origin));
+  }
+
+  /** ADR 0019: the user confirmed, on this device, the lower security version the server offers. */
+  acceptSecurityVersion(version: number): Promise<void> {
+    return this.call((session) => session.acceptSecurityVersion(BigInt(version)));
+  }
+
+  /** ADR 0018: the user accepts on this device that a self-hosted server (by default the configured one) could redirect the API key. */
+  acknowledgeOrigin(origin = identityOrigin(this.deps.settings().serverUrl)): Promise<void> {
+    return this.call((session) => session.acknowledgeOrigin(origin));
+  }
+
+  /** Withdraws the configured server's acknowledgement; the core reads it at unlock, so this locks. */
+  async forgetOrigin(): Promise<void> {
+    const origin = identityOrigin(this.deps.settings().serverUrl);
+    await this.call((session) => session.forgetOrigin(origin));
+    this.lock();
+  }
+
+  /** Whether the configured server is acknowledged on this device. */
+  async originAcknowledged(): Promise<boolean> {
+    const origin = identityOrigin(this.deps.settings().serverUrl);
+    const origins = JSON.parse(await this.call((session) => session.acknowledgedOrigins())) as string[];
+    return origins.includes(origin);
   }
 
   forgetRememberedKey(): void {
@@ -404,9 +460,13 @@ export class SecretsController {
    * than joined, so work queued in the meantime (uploads, conflict choices,
    * answers) is not silently dropped.
    */
-  sync(overrides?: ReadonlyMap<string, ConflictOverride>, answers?: ReadonlyMap<string, HistoryAnswer>): Promise<SyncReport> {
+  sync(
+    overrides?: ReadonlyMap<string, ConflictOverride>,
+    answers?: ReadonlyMap<string, HistoryAnswer>,
+    acceptRollback = false,
+  ): Promise<SyncReport> {
     if (!this.running || this.trapped) {
-      this.running = this.serial(() => this.doSync(overrides, answers)).finally(() => {
+      this.running = this.serial(() => this.doSync(overrides, answers, acceptRollback)).finally(() => {
         this.running = null;
       });
       return this.running;
@@ -419,26 +479,30 @@ export class SecretsController {
       this.queuedAnswers ??= new Map();
       for (const [k, v] of answers) this.queuedAnswers.set(k, v);
     }
+    this.queuedRollback ||= acceptRollback;
     this.queued ??= this.running
       .catch(() => undefined)
       .then(() => {
-        const [nextOverrides, nextAnswers] = [this.queuedOverrides, this.queuedAnswers];
+        const [nextOverrides, nextAnswers, nextRollback] = [this.queuedOverrides, this.queuedAnswers, this.queuedRollback];
         this.queued = null;
         this.queuedOverrides = this.queuedAnswers = undefined;
-        return this.sync(nextOverrides, nextAnswers);
+        this.queuedRollback = false;
+        return this.sync(nextOverrides, nextAnswers, nextRollback);
       });
     return this.queued;
   }
 
   private async doSync(
-    overrides?: ReadonlyMap<string, ConflictOverride>,
-    answers?: ReadonlyMap<string, HistoryAnswer>,
+    overrides: ReadonlyMap<string, ConflictOverride> | undefined,
+    answers: ReadonlyMap<string, HistoryAnswer> | undefined,
+    acceptRollback: boolean,
     retried = false,
   ): Promise<SyncReport> {
     const generation = this.generation;
     const settings = this.deps.settings();
     const options = JSON.stringify({
       policy: settings.conflictPolicy,
+      acceptRollback,
       vaultName: this.deps.vaultName,
       uploadFolder: settings.uploadFolder,
       overrides: Object.fromEntries(overrides ?? []),
@@ -467,7 +531,7 @@ export class SecretsController {
       if (generation !== this.generation) throw new LockedError("locked", "Bitwarden was locked during the sync");
       // A value typed during the sync stopped it after it saved what it did: once more, and the edit is seen.
       // shortcut: the first run's report is lost (the core rejected); what it pulled or pushed is not in the notice.
-      if (this.moved && !retried) return await this.doSync(overrides, answers, true);
+      if (this.moved && !retried) return await this.doSync(overrides, answers, acceptRollback, true);
       if (this.unlocked) this.setStatus("error", (e as Error).message);
       throw e;
     } finally {

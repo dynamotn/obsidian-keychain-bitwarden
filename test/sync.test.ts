@@ -252,6 +252,8 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         expect(a.store.get("k")).toBe("v");
         expect(a.state().base.k).toBeDefined();
         expect(r.held).toEqual([{ id: "k", cipherId: c.id }]);
+        // Counted in the sync notice.
+        expect(r.warnings).toContain("1 synced secrets can no longer be used here: kept as they are");
         a.store.set("k", "w");
         const r2 = await a.controller.sync();
         expect([...r2.pushed, ...r2.created]).toEqual([]);
