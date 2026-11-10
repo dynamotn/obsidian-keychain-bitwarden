@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import { buildArgon2Worker } from "./scripts/argon2-worker.mjs";
+import { coreWasmBase64, VIRTUAL_ID } from "./scripts/core-wasm.mjs";
 
 const production = process.argv.includes("--production");
 
@@ -12,6 +13,19 @@ const embedWorker = {
     build.onResolve({ filter: /^virtual:argon2-worker$/ }, (args) => ({ path: args.path, namespace: "argon2-worker" }));
     build.onLoad({ filter: /.*/, namespace: "argon2-worker" }, () => ({
       contents: `export default ${JSON.stringify(workerSource)};`,
+      loader: "js",
+    }));
+  },
+};
+
+// The dybw-core module, embedded as base64 the same way; its glue is bundled as an ordinary module.
+const coreWasm = coreWasmBase64();
+const embedCore = {
+  name: "embed-dybw-core-wasm",
+  setup(build) {
+    build.onResolve({ filter: /^virtual:dybw-core-wasm$/ }, (args) => ({ path: args.path, namespace: VIRTUAL_ID }));
+    build.onLoad({ filter: /.*/, namespace: VIRTUAL_ID }, () => ({
+      contents: `export default ${JSON.stringify(coreWasm)};`,
       loader: "js",
     }));
   },
@@ -30,6 +44,6 @@ await esbuild.build({
   minify: production,
   treeShaking: true,
   logLevel: "info",
-  plugins: [embedWorker],
+  plugins: [embedWorker, embedCore],
   outfile: "main.js",
 });

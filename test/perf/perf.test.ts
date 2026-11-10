@@ -9,6 +9,7 @@ import { deriveMasterKey, encryptString, KdfType, SymmetricKey } from "../../src
 import { readVault } from "../../src/bw/vault";
 import type { CipherDto, SyncDto } from "../../src/bw/api";
 import { planSync, type BaseEntry, type RemoteEntry } from "../../src/sync/plan";
+import { coreLoader } from "../../src/core/load";
 import { FakeBitwardenServer } from "../helpers/fakeServer";
 import { makeDevice } from "../helpers/device";
 
@@ -36,6 +37,13 @@ async function time<T>(task: Task, name: string, fn: () => Promise<T> | T, budge
 }
 
 describe("performance", () => {
+  it("loads the dybw-core module: base64 decode, compile, instantiate (information, no budget)", async ({ task }) => {
+    const t0 = performance.now();
+    await coreLoader()();
+    const ms = performance.now() - t0;
+    task.meta.perf = [...(task.meta.perf ?? []), `[perf:${label}] core-load: ${ms.toFixed(1)} ms (information)`];
+  });
+
   it("PBKDF2-SHA256, 600,000 iterations (Bitwarden default)", async ({ task }) => {
     await time(task, "pbkdf2-600k", () => deriveMasterKey("pw", "a@b.c", { type: KdfType.PBKDF2, iterations: 600_000 }), 3_000);
   });

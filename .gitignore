@@ -5,3 +5,4 @@ coverage/
 .scratch/
 __screenshots__/
 test/fixtures/sdk-vectors/target/
+vendor/

@@ -3,6 +3,7 @@ import argon2WorkerSource from "virtual:argon2-worker";
 import { argon2InThreadUpTo, argon2InWorker, IN_THREAD_MAX_MEMORY_KIB, type Argon2Runner } from "./bw/argon2";
 import type { HttpClient } from "./bw/http";
 import { NotificationHub } from "./bw/notifications";
+import { coreLoader } from "./core/load";
 import { SECRET_CLIENT_ID, SECRET_CLIENT_SECRET, SecretsController, type Status } from "./controller";
 import type { SecretStore, SyncReport } from "./sync/engine";
 import type { ConflictOverride, ConflictPolicy } from "./sync/plan";
@@ -45,8 +46,11 @@ export default class KeychainBitwardenPlugin extends Plugin {
   private lastActivity = Date.now();
   private lastSync = 0;
   private lastReport: SyncReport | null = null;
+  /** The dybw-core module; loaded at start, not used yet (M6 moves the vault and sync code onto it). */
+  private readonly loadCore = coreLoader();
 
   override async onload(): Promise<void> {
+    this.loadCore().catch((e: unknown) => console.warn("[keychain-bitwarden] the dybw-core module did not load", e));
     this.settings = parseSettings(this.app.loadLocalStorage(SETTINGS_KEY));
     const storage = this.app.secretStorage;
     const store: SecretStore = {

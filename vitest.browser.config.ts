@@ -2,8 +2,10 @@
 // Obsidian iOS (WKWebView), Chromium for Obsidian Android (System WebView).
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
+import { coreWasm } from "./scripts/core-wasm.mjs";
 
 export default defineConfig({
+  plugins: [coreWasm()],
   test: {
     include: ["test/**/*.test.ts"],
     exclude: ["test/integration/**", "test/sdk/**", "test/vectors/**"],

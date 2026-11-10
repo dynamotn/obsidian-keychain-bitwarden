@@ -213,9 +213,13 @@ The full threat model, the security review and its fixes are in
 
 ```sh
 npm install
+# The dybw-core WASM module main.js embeds, into vendor/dybw-core (needed by everything below): the core at
+# the commit in core.rev, cloned, or a local checkout with DYBW_CORE_DIR=<dybw-core>. Needs Rust 1.99.1 with
+# wasm32-unknown-unknown, wasm-bindgen 0.2.129, binaryen version_133 (WASM_OPT) and dybatpho (DYBATPHO_DIR).
+scripts/build-core.sh
 npm run lint               # eslint-plugin-obsidianmd, the rules of the community plugin review
 npm run build              # typecheck (TypeScript 7) + production bundle (main.js)
-npm run check:bundle       # bundle may only require "obsidian", no Node globals
+npm run check:bundle       # at most 1 572 864 bytes; may only require "obsidian", no Node globals
 npm test                   # unit + multi-device sync tests (in-memory Bitwarden)
 npm run test:coverage      # the same, failing below 100% coverage of the code that runs without Obsidian
 npm run test:browser       # the same suites in WebKit (≈ iOS) and Chromium (≈ Android)
