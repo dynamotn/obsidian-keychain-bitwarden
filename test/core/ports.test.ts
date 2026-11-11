@@ -9,6 +9,8 @@ import {
   HTTP_TIMEOUT_MS,
   hostPorts,
   KDF_ABORTED,
+  LOCAL_CHANGED,
+  LocalChangedError,
   RSA_KEY_ERROR,
   SOCKET_CLOSED,
   SOCKET_FAILED,
@@ -209,6 +211,18 @@ describe("secret ports", () => {
     await expect(ports.secretLoad("k")).rejects.toThrow(new Error(STORAGE_FAILED));
     await expect(ports.secretSave("k", "v")).rejects.toThrow(new Error(STORAGE_FAILED));
     await expect(ports.secretRemove("k")).rejects.toThrow(new Error(STORAGE_FAILED));
+  });
+
+  it("a write the storage refuses as changed since the sync began rejects with local-changed", async () => {
+    const { ports } = setup({
+      secretStorage: {
+        getSecret: () => null,
+        setSecret: () => {
+          throw new LocalChangedError();
+        },
+      },
+    });
+    await expect(ports.secretSave("k", "v")).rejects.toThrow(new Error(LOCAL_CHANGED));
   });
 });
 

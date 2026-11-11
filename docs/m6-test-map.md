@@ -2,7 +2,7 @@
 
 Every test that M6 replaced or removed, with the test that now covers it. No row without a covering test, except
 the few marked "by construction" or "not applicable", which say why.
-Core tests are named at dybw-core `a3d6e0a` (the rev in `core.rev`), paths under `crates/`; plugin tests by file
+Core tests are named at dybw-core `928e7f9` (the rev in `core.rev`), paths under `crates/`; plugin tests by file
 and full name.
 
 M6 removed the plugin's own Bitwarden code (`src/bw/` but the Argon2 runner and its worker, and `src/sync/`) and the
@@ -188,7 +188,7 @@ The scenarios are the same; what they assert follows the core where it reports d
 ### `test/notifications.test.ts` (before M6)
 
 The hub is the core's (`runHub`, `crates/dybw-core/src/api/hub.rs`): the protocol rows are core tests in
-`crates/dybw-core/src/api/msgpack_tests.rs` and `hub_tests.rs` (dybw-core `a3d6e0a`); the plugin's own rows, through
+`crates/dybw-core/src/api/msgpack_tests.rs` and `hub_tests.rs` (dybw-core `928e7f9`); the plugin's own rows, through
 the controller, its socket port and the real core, are in `test/hub.test.ts`. Ruling: `wake()` starts a running hub
 over (stop + restart) instead of only waking one that is down, so a socket a suspend killed silently is replaced too.
 
@@ -218,7 +218,7 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | notifications hub client > starts over after %s (a refused handshake, a malformed handshake) | dybw-core `hub_tests.rs::starts_over_after_a_refused_or_malformed_handshake` |
 | notifications hub client > starts over after malformed MessagePack | dybw-core `hub_tests.rs::starts_over_after_malformed_messagepack_and_reports_nothing` |
 | notifications hub client > starts over when the server sends Close | dybw-core `hub_tests.rs::starts_over_when_the_server_sends_close_and_reconnects_once_for_two`, `run_hub_follows_a_close_from_the_server` |
-| notifications hub client > retries later when no URL can be had (for example while logging in fails) | dybw-core `hub_tests.rs::run_hub_backs_off_when_no_url_can_be_had_or_the_connect_fails` |
+| notifications hub client > retries later when no URL can be had (for example while logging in fails) | dybw-core `hub_tests.rs::run_hub_backs_off_when_no_url_can_be_had_and_renews_the_token_once_when_the_connect_fails` |
 | notifications hub client > stops for good: no reconnect and no late reports | `test/hub.test.ts`, same name, on the core, and › stops when locked, and never reconnects with the old token; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
 | notifications hub client > with timers that may still fire after being cleared > reports no change once stopped | `test/hub.test.ts` › stops for good: no reconnect and no late reports (the core checks `stop` before reporting; the plugin's `sleepMs` ends on the hub's signal) |
 | notifications hub client > with timers that may still fire after being cleared > does not reconnect once stopped | `test/hub.test.ts` › stops for good: no reconnect and no late reports; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
@@ -231,7 +231,7 @@ over (stop + restart) instead of only waking one that is down, so a socket a sus
 | notifications hub client > opens one socket when woken while the first URL is still on its way | `test/hub.test.ts` › starts a connection that looks up over when woken (the stopped run closes its socket at its next stop check; one socket stays open) |
 | notifications hub client > does not retry for a URL request that an earlier wake superseded | `test/hub.test.ts` › starts a connection that looks up over when woken (the core reads the URL from its own keys, without a request: nothing to supersede) |
 | notifications hub client > opens no socket when stopped while the URL is on its way | `test/controller.test.ts` › SecretsController > notifications hub > fails while locked, without contacting the server; dybw-core `hub_tests.rs::run_hub_stops_during_the_wait_for_a_reconnect` |
-| notifications hub client > retries later when the socket cannot be created | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::run_hub_backs_off_when_no_url_can_be_had_or_the_connect_fails` |
+| notifications hub client > retries later when the socket cannot be created | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::run_hub_backs_off_when_no_url_can_be_had_and_renews_the_token_once_when_the_connect_fails` |
 | notifications hub client > starts over after a socket error | `test/hub.test.ts`, same name, on the core; dybw-core `hub_tests.rs::run_hub_reconnects_after_the_socket_ends_or_fails` |
 | notifications hub client > starts over when a ping cannot be sent | dybw-core `hub_tests.rs::run_hub_starts_over_after_a_send_fails` |
 | notifications hub client > accepts the handshake as a text frame, and ignores text after it | dybw-core `hub_tests.rs::accepts_the_handshake_as_a_text_frame_and_ignores_text_after_it` |
@@ -424,3 +424,14 @@ Added: › sends credentials to a self-hosted server only once acknowledged, as 
 an item the server sends without its secure note part, › writes a new item of a COSE account at security
 version 2 as a blob: Vaultwarden refuses it at any size. The two COSE runs use security state version 1: Vaultwarden
 1.37.5 refuses blob items (the last test).
+
+## After M6: the review follow-ups (dybw-core `928e7f9`)
+
+The core now saves as the sync goes and lets the secret port refuse a write over a value typed during the sync
+(`local-changed`, reported in `kept`); the plugin no longer runs the sync again. The tests that proved the old guard
+assert the new outcome under their names (the user's value kept, the next sync resolving it), but one whose name
+described the old retry.
+
+| Test | Covered by |
+|---|---|
+| SecretsController > sync > syncs once more after a value typed during the sync, and only once | `test/controller.test.ts` › SecretsController > sync > keeps a value typed during the sync without syncing again; the next sync resolves it; dybw-core `dybw-core-wasm/src/tests.rs::a_value_changed_here_during_the_sync_is_kept`, `::a_clear_refused_for_a_value_changed_here_keeps_it` |

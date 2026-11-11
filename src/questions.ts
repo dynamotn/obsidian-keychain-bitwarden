@@ -164,7 +164,7 @@ export function syncQuestion(
   return null;
 }
 
-/** ADR 0019: one button accepts every rollback of the sync. */
+/** ADR 0019: one button accepts every rollback the report shows (`acceptedRollbacks`). */
 export function rollbackQuestion(report: SyncReport): Question {
   return {
     title: "Older versions from Bitwarden",
@@ -175,6 +175,11 @@ export function rollbackQuestion(report: SyncReport): Question {
       "this device's values over them.",
     accept: "Accept the server's versions",
   };
+}
+
+/** What accepting `rollbackQuestion(report)` accepts: the rollbacks it showed, each at the revision shown. */
+export function acceptedRollbacks(report: SyncReport): Map<string, string> {
+  return new Map(report.rollbacks.map((r) => [r.cipherId, r.revisionDate]));
 }
 
 /** ADR 0016: what each question warns about, and its answers. */

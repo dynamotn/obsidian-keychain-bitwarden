@@ -222,10 +222,12 @@ describe("notifications hub client", () => {
   });
 
   it("retries later when the socket cannot be created", async () => {
-    failCreates = 1;
+    // The core takes a failed connect for a possibly refused token: it renews it and tries once more at once.
+    failCreates = 2;
     start();
     await vi.advanceTimersByTimeAsync(0);
     expect(sockets).toHaveLength(0);
+    expect(failCreates).toBe(0);
     await vi.advanceTimersByTimeAsync(2_000);
     await connected(1);
   });

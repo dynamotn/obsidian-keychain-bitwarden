@@ -865,8 +865,12 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         };
         const r = await a.controller.sync();
         expect(r.cleared).toEqual([]);
+        expect(r.kept).toEqual([{ id: "b-gone", reason: "local-changed" }]);
         expect(a.store.get("b-gone")).toBe("typed meanwhile");
-        expect(r.conflicts.map((x) => [x.id, x.kind])).toEqual([["b-gone", "deleted-remotely"]]);
+        server.beforeUpdate = null;
+        const next = await a.controller.sync();
+        expect(a.store.get("b-gone")).toBe("typed meanwhile");
+        expect(next.conflicts.map((x) => [x.id, x.kind])).toEqual([["b-gone", "deleted-remotely"]]);
       });
 
       it("keeps a secret whose item became unreadable instead of clearing it", async () => {
@@ -947,7 +951,11 @@ describe.each(ACCOUNT_KINDS)("with a %s account key", (userKey) => {
         };
         const r = await a.controller.sync();
         expect(a.store.get("b-second")).toBe("typed meanwhile");
-        expect(r.conflicts.map((x) => x.id)).toEqual(["b-second"]);
+        expect(r.kept).toEqual([{ id: "b-second", reason: "local-changed" }]);
+        server.beforeUpdate = null;
+        const next = await a.controller.sync();
+        expect(a.store.get("b-second")).toBe("typed meanwhile");
+        expect(next.conflicts.map((x) => x.id)).toEqual(["b-second"]);
       });
 
       it("refuses to clear most secrets at once", async () => {

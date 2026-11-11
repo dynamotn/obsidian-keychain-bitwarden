@@ -16,7 +16,7 @@ import {
   type UnlockSummary,
 } from "./controller";
 import { LockedError } from "./core/errors";
-import { acknowledgeToggle, ORIGIN_NAME, ORIGIN_TEXT, rollbackQuestion, syncQuestion, unlessLocked, unlockAsking } from "./questions";
+import { acknowledgeToggle, ORIGIN_NAME, ORIGIN_TEXT, acceptedRollbacks, rollbackQuestion, syncQuestion, unlessLocked, unlockAsking } from "./questions";
 import { ask, ConflictModal, HistoryModal, PickScopeModal, PickSecretModal, UnlockModal } from "./ui";
 import { DEFAULT_SETTINGS, parseSettings, type PluginSettings } from "./settings";
 
@@ -200,7 +200,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
     verbose: boolean,
     overrides?: Map<string, ConflictOverride>,
     answers?: Map<string, HistoryAnswer>,
-    acceptRollback = false,
+    acceptRollbacks?: Map<string, string>,
   ): Promise<void> {
     if (!this.controller.isUnlocked) {
       if (verbose) this.openUnlock();
@@ -209,7 +209,7 @@ export default class KeychainBitwardenPlugin extends Plugin {
     if (verbose) this.lastActivity = Date.now();
     this.lastSync = Date.now();
     try {
-      const report = await this.controller.sync(overrides, answers, acceptRollback);
+      const report = await this.controller.sync(overrides, answers, acceptRollbacks);
       this.lastReport = report;
       if (verbose || needsNotice(report)) {
         new Notice(`Bitwarden: ${summarize(report)}`);
@@ -238,8 +238,8 @@ export default class KeychainBitwardenPlugin extends Plugin {
     else if (question === "rollbacks") {
       void ask(this.app, rollbackQuestion(report)).then(
         unlessLocked(this.controller, (ok: boolean) => {
-          // Accepts every rollback of that sync at once: ADR 0019 allows one button per report.
-          if (ok) void this.syncNow(true, undefined, undefined, true);
+          // Accepts the rollbacks the question showed, each at the revision shown (ADR 0019: one button per report).
+          if (ok) void this.syncNow(true, undefined, undefined, acceptedRollbacks(report));
           else this.askAfterSync(report, true);
         }),
       );

@@ -16,7 +16,7 @@ way it is, and how it was verified. The user-facing summary is in
   and ADR 0021 (blob ciphers, 1.6). The core also brings ADR 0017 (KDF
   parameters pinned per device) and ADR 0018 (redirects and acknowledged
   origins).
-- dybw-core at `a3d6e0a` (`core.rev`), compiled to WebAssembly and embedded
+- dybw-core at `928e7f9` (`core.rev`), compiled to WebAssembly and embedded
   in `main.js` (ADR 0024 budget: 1 572 864 bytes for `main.js`).
 - Plugin id `keychain-bitwarden`, version 0.1.0, `minAppVersion` 1.11.4.
 - `isDesktopOnly: false`: it runs on desktop, iOS and Android.
@@ -465,8 +465,10 @@ Notes on the table:
   and `uploadCandidates` take the session's keys one after another with the
   sync (the core answers `busy` otherwise), so they wait for a running sync
   instead of racing it. A value typed during a sync is never written over:
-  the core writes values at the end of a run, and the controller refuses a
-  write to a secret that changed since the run started, then runs once more.
+  the core saves each action's values as the run goes, and the secret port
+  refuses a write to a secret that changed since the run started
+  (`local-changed`); the core keeps its base entry, lists the id in `kept`
+  (a count in the notice), and the next sync resolves it.
 
 ### 6.4 Triggers (`main.ts`)
 

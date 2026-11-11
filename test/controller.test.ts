@@ -6,10 +6,11 @@ import {
   SECRET_API_ORIGIN,
   SECRET_CLIENT_SECRET,
   SECRET_USER_KEY,
+  summarize,
   TRAP_MESSAGE,
   type Status,
 } from "../src/controller";
-import { ApiError, LockedError, OriginNotAcknowledgedError, PortError, WrongPasswordError } from "../src/core/errors";
+import { ApiError, LockedError, OriginNotAcknowledgedError, WrongPasswordError } from "../src/core/errors";
 import { STORAGE_PREFIX, type SocketLike } from "../src/core/ports";
 import { KdfType } from "./helpers/bw/crypto";
 import type { HttpClient, HttpRequest } from "./helpers/bw/http";
@@ -298,14 +299,14 @@ describe("SecretsController", () => {
       await server.editValue(c.id, "old");
       c.revisionDate = old;
       const first = a.controller.sync();
-      const second = a.controller.sync(undefined, undefined, true);
+      const second = a.controller.sync(undefined, undefined, new Map([[c.id, old]]));
       const [r1, r2] = await Promise.all([first, second]);
       expect(r1.rollbacks).toHaveLength(1);
       expect(r2.rollbacks).toEqual([]);
       expect(a.store.get("k")).toBe("old");
     });
 
-    it("syncs once more after a value typed during the sync, and only once", async () => {
+    it("keeps a value typed during the sync without syncing again; the next sync resolves it", async () => {
       const first = await server.addItem({ name: "a-first", value: "1" });
       const second = await server.addItem({ name: "b-second", value: "1" });
       a.settings.conflictPolicy = "prefer-remote";
@@ -323,10 +324,21 @@ describe("SecretsController", () => {
         a.store.set("b-second", `typed ${typed}`);
       };
       const runSync = vi.spyOn(WasmSession.prototype, "runSync");
-      await expect(a.controller.sync()).rejects.toBeInstanceOf(PortError);
-      expect(runSync).toHaveBeenCalledTimes(2);
-      expect(a.store.get("b-second")).toBe("typed 2");
+      const r = await a.controller.sync();
+      expect(runSync).toHaveBeenCalledTimes(1);
+      expect(r.kept).toEqual([{ id: "b-second", reason: "local-changed" }]);
+      expect(r.pulled).toEqual([]);
+      expect(summarize(r)).toContain("1 edited during the sync, kept for the next one");
+      expect(a.controller.status).toBe("idle");
+      expect(a.store.get("b-second")).toBe("typed 1");
       expect(a.state().base["b-second"]).toEqual(base);
+      // The next sync sees both sides changed: a conflict, the user's value still there.
+      server.beforeUpdate = null;
+      a.settings.conflictPolicy = "ask";
+      const next = await a.controller.sync();
+      expect(runSync).toHaveBeenCalledTimes(2);
+      expect(next.conflicts.map((c) => [c.id, c.kind])).toEqual([["b-second", "both-changed"]]);
+      expect(a.store.get("b-second")).toBe("typed 1");
     });
 
     it("never writes over a secret created during the sync with the id of one it pulls", async () => {
@@ -339,7 +351,11 @@ describe("SecretsController", () => {
       };
       const r = await a.controller.sync();
       expect(a.store.get("fresh")).toBe("mine");
-      expect(r.conflicts.map((c) => [c.id, c.kind])).toEqual([["fresh", "local-unsynced"]]);
+      expect(r.kept).toEqual([{ id: "fresh", reason: "local-changed" }]);
+      server.beforeUpdate = null;
+      const next = await a.controller.sync();
+      expect(a.store.get("fresh")).toBe("mine");
+      expect(next.conflicts.map((c) => [c.id, c.kind])).toEqual([["fresh", "local-unsynced"]]);
     });
 
     it("still runs a queued sync when the running one fails", async () => {
@@ -450,8 +466,10 @@ describe("SecretsController", () => {
       const token = server.requests.find(isVaultSync)!.headers!.Authorization!.replace(/^Bearer /, "");
       const hub = d.controller.startHub(() => undefined);
       expect(d.controller.startHub(() => undefined)).not.toBe(hub);
-      await vi.waitFor(() => expect(urls).toHaveLength(1));
+      // A failed connect may be a refused token: the core renews it once and connects again at once, then backs off.
+      await vi.waitFor(() => expect(urls).toHaveLength(2));
       expect(urls[0]).toBe(`wss://bw.test/notifications/hub?access_token=${encodeURIComponent(token)}`);
+      expect(urls[1]).not.toBe(urls[0]);
       d.controller.stopHub();
       await hub;
     });
@@ -475,7 +493,7 @@ describe("SecretsController", () => {
       const d = makeDevice(server.http, server.account, { createSocket: recordingSocket(urls) });
       await d.controller.unlock(server.account.password);
       const hub = d.controller.startHub(() => undefined);
-      await vi.waitFor(() => expect(urls).toHaveLength(1));
+      await vi.waitFor(() => expect(urls).toHaveLength(2));
       d.controller.lock();
       await hub;
     });
@@ -538,12 +556,13 @@ describe("SecretsController", () => {
   });
 
   describe("needsNotice", () => {
-    const empty = { pulled: [], pushed: [], created: [], cleared: [], conflicts: [], errors: [], warnings: [] };
+    const empty = { pulled: [], pushed: [], created: [], cleared: [], conflicts: [], errors: [], kept: [], warnings: [] };
     it.each([
       ["nothing happened", {}, false],
       ["a pull", { pulled: ["k"] }, true],
       ["a conflict", { conflicts: [{ id: "k", kind: "both-changed", label: "k" }] }, true],
       ["an error", { errors: [{ id: "k", error: "e" }] }, true],
+      ["a value kept", { kept: [{ id: "k", reason: "local-changed" }] }, true],
       ["only a warning", { warnings: ["1 secrets kept changing during the sync: sync again later"] }, true],
     ])("a background sync with %s", (_kind, part, expected) => {
       expect(needsNotice({ ...empty, ...part } as unknown as Parameters<typeof needsNotice>[0])).toBe(expected);

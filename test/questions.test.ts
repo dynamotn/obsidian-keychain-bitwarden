@@ -4,6 +4,7 @@ import { KdfWeakenedError, OriginNotAcknowledgedError, SecurityDowngradeError, W
 import { isSelfHosted, summarize, type SyncReport } from "../src/controller";
 import { KdfAbortedError } from "../src/bw/argon2";
 import {
+  acceptedRollbacks,
   acknowledgeToggle,
   historyAnswers,
   rollbackQuestion,
@@ -39,6 +40,7 @@ const emptyReport: SyncReport = {
   unreadable: [],
   duplicates: [],
   skipped: [],
+  kept: [],
   warnings: [],
 };
 
@@ -352,13 +354,43 @@ describe("the core's questions", () => {
       await server.editValue(c.id, "old");
       c.revisionDate = old;
       const r = await a.controller.sync();
-      expect(r.rollbacks).toEqual([{ id: "k", cipherId: c.id }]);
+      expect(r.rollbacks).toEqual([{ id: "k", cipherId: c.id, revisionDate: old }]);
       expect(a.store.get("k")).toBe("new");
       expect(syncQuestion(r, "prefer-remote")).toBe("rollbacks");
       expect(rollbackQuestion(r)).toMatchObject({ accept: "Accept the server's versions", text: expect.stringContaining("1 synced") });
-      const accepted = await a.controller.sync(undefined, undefined, true);
+      expect(acceptedRollbacks(r)).toEqual(new Map([[c.id, old]]));
+      const accepted = await a.controller.sync(undefined, undefined, acceptedRollbacks(r));
       expect(accepted.rollbacks).toEqual([]);
       expect(a.store.get("k")).toBe("old");
+    });
+
+    it("accepts only the rollbacks it showed, at the revision shown", async () => {
+      await a.controller.unlock(server.account.password);
+      const c = await server.addItem({ name: "k", value: "v1" });
+      const other = await server.addItem({ name: "j", value: "j1" });
+      const [rev1, otherOld] = [c.revisionDate, other.revisionDate];
+      await a.controller.sync();
+      await server.editValue(c.id, "v2");
+      const rev2 = c.revisionDate;
+      await server.editValue(other.id, "j2");
+      await a.controller.sync();
+      await server.editValue(c.id, "v3");
+      await a.controller.sync();
+      // Shown: k back at v2. Then k rolls back again, to v1, and j rolls back too, before the user accepts.
+      await server.editValue(c.id, "v2");
+      c.revisionDate = rev2;
+      const shown = await a.controller.sync();
+      expect(shown.rollbacks).toEqual([{ id: "k", cipherId: c.id, revisionDate: rev2 }]);
+      await server.editValue(c.id, "v1");
+      c.revisionDate = rev1;
+      await server.editValue(other.id, "j1");
+      other.revisionDate = otherOld;
+      const r = await a.controller.sync(undefined, undefined, acceptedRollbacks(shown));
+      expect(r.rollbacks).toEqual([
+        { id: "j", cipherId: other.id, revisionDate: otherOld },
+        { id: "k", cipherId: c.id, revisionDate: rev1 },
+      ]);
+      expect([a.store.get("k"), a.store.get("j")]).toEqual(["v3", "j2"]);
     });
   });
 
@@ -421,10 +453,12 @@ describe("the core's questions", () => {
         conflicts: [{ id: "e" }],
         skipped: [{ cipherId: "f" }],
         errors: [{ id: "g" }],
+        kept: [{ id: "h", reason: "local-changed" }],
         warnings: ["1 items need a newer version of this tool: left alone", "2 synced secrets can no longer be used here: kept as they are"],
       } as unknown as SyncReport;
       expect(summarize(report)).toBe(
         "1 updated, 1 uploaded, 1 added to Bitwarden, 1 cleared, 1 conflict(s), 1 item(s) skipped, 1 error(s), " +
+          "1 edited during the sync, kept for the next one, " +
           "1 items need a newer version of this tool: left alone, 2 synced secrets can no longer be used here: kept as they are",
       );
     });

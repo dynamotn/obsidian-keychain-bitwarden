@@ -254,7 +254,7 @@ BW_IT_URL=http://127.0.0.1:18080 npm run test:integration
 
 Login, unlock, the sync and the notifications hub run in
 [dybw-core](https://gitlab.com/dynamo-tools/dybw-core), compiled to WebAssembly and
-embedded in `main.js`; `core.rev` names the commit (now `a3d6e0a`). Its own
+embedded in `main.js`; `core.rev` names the commit (now `928e7f9`). Its own
 suites cover the cryptography (known answers from independent Python
 implementations and from Bitwarden's SDK, which also decrypts what the core
 encrypts) and the dybw conformance vectors, in Node, Chromium and WebKit.

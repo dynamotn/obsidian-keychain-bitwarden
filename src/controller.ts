@@ -6,7 +6,7 @@ import { WasmSession } from "../vendor/dybw-core/dybw_core_wasm.js";
 import { KdfAbortedError } from "./bw/argon2";
 import { InvalidError, LockedError, parseCoreError, WrongPasswordError, type Kdf } from "./core/errors";
 import { coreLoader } from "./core/load";
-import { hostPorts, type PortDeps } from "./core/ports";
+import { hostPorts, LocalChangedError, type PortDeps } from "./core/ports";
 
 /** Secrets the plugin keeps for itself; they never leave the device. */
 export const RESERVED_PREFIX = "keychain-bitwarden-";
@@ -79,13 +79,16 @@ export interface SyncReport {
   passes: number;
   keptChanging: boolean;
   questions: { id: string; label: string; question: HistoryQuestion }[];
-  rollbacks: CipherPair[];
+  /** `revisionDate` is the server's, as text: accepting passes it back, so a newer rollback is shown again. */
+  rollbacks: (CipherPair & { revisionDate: string })[];
   held: CipherPair[];
   readOnly: CipherPair[];
   unknownFeatures: { cipherId: string; features: string[] }[];
   unreadable: string[];
   duplicates: { id: string; kept: string; left: string[]; boundKept: boolean }[];
   skipped: { cipherId: string; reason: string }[];
+  /** Values the user changed during the sync: kept over what the sync would write, resolved by the next sync. */
+  kept: { id: string; reason: "local-changed" }[];
   /** The core's sentences for the notice, counts only. */
   warnings: string[];
 }
@@ -171,7 +174,7 @@ export function isSelfHosted(serverUrl: string): boolean {
 /** Whether a sync the user did not ask for is worth a notice: it changed something, or the core has something to say. */
 export function needsNotice(report: SyncReport): boolean {
   const changed = report.pulled.length + report.pushed.length + report.created.length + report.cleared.length;
-  return changed + report.conflicts.length + report.errors.length + report.warnings.length > 0;
+  return changed + report.conflicts.length + report.errors.length + report.kept.length + report.warnings.length > 0;
 }
 
 /** The sync notice: what changed, then the core's own sentences (held, unknown features, rollbacks, …), counts only. */
@@ -184,6 +187,7 @@ export function summarize(report: SyncReport): string {
   if (report.conflicts.length) parts.push(`${report.conflicts.length} conflict(s)`);
   if (report.skipped.length) parts.push(`${report.skipped.length} item(s) skipped`);
   if (report.errors.length) parts.push(`${report.errors.length} error(s)`);
+  if (report.kept.length) parts.push(`${report.kept.length} edited during the sync, kept for the next one`);
   parts.push(...report.warnings);
   return parts.length ? parts.join(", ") : "everything is up to date";
 }
@@ -199,7 +203,7 @@ export class SecretsController {
   private queued: Promise<SyncReport> | null = null;
   private queuedOverrides: Map<string, ConflictOverride> | undefined;
   private queuedAnswers: Map<string, HistoryAnswer> | undefined;
-  private queuedRollback = false;
+  private queuedRollbacks: Map<string, string> | undefined;
   /** Calls that take the core's keys out run one after another: the core answers `busy` otherwise. */
   private tail: Promise<unknown> = Promise.resolve();
   /** Bumped on every lock; an unlock or sync started under an older generation stops. */
@@ -212,10 +216,8 @@ export class SecretsController {
   private hub: AbortController | null = null;
   /** What the running hub calls on a change, for `wake` to start it again with. */
   private hubOnChange: (() => void) | null = null;
-  /** The local values the running sync was given; a value typed since is never written over. */
+  /** The local values the running sync was given, then what it wrote; a value typed since is never written over. */
   private snapshot: Map<string, string> | null = null;
-  /** The running sync found a value typed since it started. */
-  private moved = false;
   private listeners = new Set<(s: Status, detail?: string) => void>();
   status: Status = "locked";
 
@@ -256,13 +258,11 @@ export class SecretsController {
         secretStorage: {
           getSecret: store.get.bind(store),
           setSecret: (id, value) => {
-            // The core writes the sync's values at its end: one typed meanwhile wins, and the core keeps its base
-            // entry, so the next sync sees the edit.
-            if (this.snapshot && store.get(id) !== (this.snapshot.get(id) ?? null)) {
-              this.moved = true;
-              throw new Error("changed during the sync");
-            }
+            // A value typed during the sync wins: the core keeps its base entry and reports it in `kept`, so the next
+            // sync sees the edit.
+            if (this.snapshot && store.get(id) !== (this.snapshot.get(id) ?? null)) throw new LocalChangedError();
             store.set(id, value);
+            this.snapshot?.set(id, value);
           },
         },
         kdfSignal: () => this.unlocking?.signal,
@@ -484,16 +484,16 @@ export class SecretsController {
   /**
    * Runs a sync. A call made while one is running is queued behind it rather
    * than joined, so work queued in the meantime (uploads, conflict choices,
-   * answers) is not silently dropped. `acceptRollback` accepts every rollback that sync meets: ADR 0019 allows one
-   * button per report.
+   * answers) is not silently dropped. `acceptRollbacks` (cipher id → the revision shown) accepts the rollbacks the
+   * user saw (ADR 0019); one that rolled back again since is held and reported again.
    */
   sync(
     overrides?: ReadonlyMap<string, ConflictOverride>,
     answers?: ReadonlyMap<string, HistoryAnswer>,
-    acceptRollback = false,
+    acceptRollbacks?: ReadonlyMap<string, string>,
   ): Promise<SyncReport> {
     if (!this.running || this.trapped) {
-      this.running = this.serial(() => this.doSync(overrides, answers, acceptRollback)).finally(() => {
+      this.running = this.serial(() => this.doSync(overrides, answers, acceptRollbacks)).finally(() => {
         this.running = null;
       });
       return this.running;
@@ -506,15 +506,17 @@ export class SecretsController {
       this.queuedAnswers ??= new Map();
       for (const [k, v] of answers) this.queuedAnswers.set(k, v);
     }
-    this.queuedRollback ||= acceptRollback;
+    if (acceptRollbacks) {
+      this.queuedRollbacks ??= new Map();
+      for (const [k, v] of acceptRollbacks) this.queuedRollbacks.set(k, v);
+    }
     this.queued ??= this.running
       .catch(() => undefined)
       .then(() => {
-        const [nextOverrides, nextAnswers, nextRollback] = [this.queuedOverrides, this.queuedAnswers, this.queuedRollback];
+        const [nextOverrides, nextAnswers, nextRollbacks] = [this.queuedOverrides, this.queuedAnswers, this.queuedRollbacks];
         this.queued = null;
-        this.queuedOverrides = this.queuedAnswers = undefined;
-        this.queuedRollback = false;
-        return this.sync(nextOverrides, nextAnswers, nextRollback);
+        this.queuedOverrides = this.queuedAnswers = this.queuedRollbacks = undefined;
+        return this.sync(nextOverrides, nextAnswers, nextRollbacks);
       });
     return this.queued;
   }
@@ -522,15 +524,14 @@ export class SecretsController {
   private async doSync(
     overrides: ReadonlyMap<string, ConflictOverride> | undefined,
     answers: ReadonlyMap<string, HistoryAnswer> | undefined,
-    acceptRollback: boolean,
-    retried = false,
+    acceptRollbacks: ReadonlyMap<string, string> | undefined,
   ): Promise<SyncReport> {
     const generation = this.generation;
     const epoch = this.answerEpoch;
     const settings = this.deps.settings();
     const options = JSON.stringify({
       policy: settings.conflictPolicy,
-      acceptRollback,
+      acceptRollbacks: Object.fromEntries(acceptRollbacks ?? []),
       vaultName: this.deps.vaultName,
       uploadFolder: settings.uploadFolder,
       overrides: Object.fromEntries(overrides ?? []),
@@ -541,7 +542,6 @@ export class SecretsController {
     const values = ids.map((id) => store.get(id)!);
     if (this.unlocked) this.setStatus("syncing");
     this.snapshot = new Map(ids.map((id, i) => [id, values[i]!]));
-    this.moved = false;
     try {
       const raw = JSON.parse(await this.call((session) => session.runSync(options, ids, values))) as Omit<SyncReport, "conflicts"> & {
         conflicts: RawConflict[];
@@ -557,9 +557,6 @@ export class SecretsController {
     } catch (e) {
       // Locking stops a running sync; that is not an error to show.
       if (generation !== this.generation) throw new LockedError("locked", "Bitwarden was locked during the sync");
-      // A value typed during the sync stopped it after it saved what it did: once more, and the edit is seen.
-      // shortcut: the first run's report is lost (the core rejected); what it pulled or pushed is not in the notice.
-      if (this.moved && !retried) return await this.doSync(overrides, answers, acceptRollback, true);
       // A re-unlock since the sync started made this rejection the old session's: not the new one's error.
       if (this.unlocked && epoch === this.answerEpoch) this.setStatus("error", (e as Error).message);
       throw e;

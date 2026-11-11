@@ -17,6 +17,15 @@ export const KDF_ABORTED = "aborted";
 export const SOCKET_FAILED = "the connection failed";
 export const SOCKET_CLOSED = "the connection is closed";
 export const STORAGE_FAILED = "the device storage failed";
+/** What `secretSave` rejects with to refuse a write over a value the user changed since the sync began (the core's). */
+export const LOCAL_CHANGED = "local-changed";
+
+/** Thrown by `secretStorage.setSecret` to refuse a write: the user changed the value since the sync began. */
+export class LocalChangedError extends Error {
+  constructor() {
+    super(LOCAL_CHANGED);
+  }
+}
 
 /** The plugin's localStorage keys: the core's `<key>` lives under `keychain-bitwarden:<key>`. */
 export const STORAGE_PREFIX = "keychain-bitwarden:";
@@ -156,8 +165,15 @@ export function hostPorts(deps: PortDeps) {
 
     /** An empty secret is a removed one: Obsidian's secret storage cannot delete. */
     secretLoad: (key: string) => attempt(STORAGE_FAILED, () => deps.secretStorage.getSecret(key) || null),
-    secretSave: (key: string, value: string) =>
-      attempt(STORAGE_FAILED, () => deps.secretStorage.setSecret(key, value)),
+    /** Rejects with `LOCAL_CHANGED` when the storage refused the write with `LocalChangedError`. */
+    secretSave(key: string, value: string): Promise<void> {
+      try {
+        deps.secretStorage.setSecret(key, value);
+        return Promise.resolve();
+      } catch (e) {
+        return Promise.reject(new Error(e instanceof LocalChangedError ? LOCAL_CHANGED : STORAGE_FAILED));
+      }
+    },
     secretRemove: (key: string) => attempt(STORAGE_FAILED, () => deps.secretStorage.setSecret(key, "")),
 
     async argon2id(password: Uint8Array, salt: Uint8Array, iterations: number, memoryKiB: number, parallelism: number) {
