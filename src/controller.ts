@@ -187,7 +187,6 @@ export function summarize(report: SyncReport): string {
   if (report.conflicts.length) parts.push(`${report.conflicts.length} conflict(s)`);
   if (report.skipped.length) parts.push(`${report.skipped.length} item(s) skipped`);
   if (report.errors.length) parts.push(`${report.errors.length} error(s)`);
-  if (report.kept.length) parts.push(`${report.kept.length} edited during the sync, kept for the next one`);
   parts.push(...report.warnings);
   return parts.length ? parts.join(", ") : "everything is up to date";
 }

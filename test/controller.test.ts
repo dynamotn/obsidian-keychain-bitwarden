@@ -328,7 +328,7 @@ describe("SecretsController", () => {
       expect(runSync).toHaveBeenCalledTimes(1);
       expect(r.kept).toEqual([{ id: "b-second", reason: "local-changed" }]);
       expect(r.pulled).toEqual([]);
-      expect(summarize(r)).toContain("1 edited during the sync, kept for the next one");
+      expect(summarize(r)).toBe("1 uploaded, 1 secrets changed here during the sync: kept, the next sync compares them");
       expect(a.controller.status).toBe("idle");
       expect(a.store.get("b-second")).toBe("typed 1");
       expect(a.state().base["b-second"]).toEqual(base);
@@ -339,6 +339,31 @@ describe("SecretsController", () => {
       expect(runSync).toHaveBeenCalledTimes(2);
       expect(next.conflicts.map((c) => [c.id, c.kind])).toEqual([["b-second", "both-changed"]]);
       expect(a.store.get("b-second")).toBe("typed 1");
+    });
+
+    it("writes a secret it pulls twice in one sync, the second over its own first", async () => {
+      const pulled = await server.addItem({ name: "a-pulled", value: "1" });
+      const pushed = await server.addItem({ name: "b-pushed", value: "1" });
+      await a.controller.sync();
+      // The value a second pass pulls, encrypted ahead: the hook below cannot await.
+      await server.editValue(pulled.id, "r2");
+      const second = { login: pulled.login, notes: pulled.notes };
+      await server.editValue(pulled.id, "r1");
+      a.store.set("b-pushed", "mine");
+      let raced = false;
+      server.beforeUpdate = (id) => {
+        if (raced || id !== pushed.id) return;
+        raced = true;
+        // The push races another device's edit, and a-pulled changed again: a second pass pulls it once more.
+        pushed.revisionDate = server.nextRevision();
+        Object.assign(pulled, second, { revisionDate: server.nextRevision() });
+      };
+      const r = await a.controller.sync();
+      expect(r.passes).toBe(2);
+      expect(r.kept).toEqual([]);
+      // Once per pass: the core lists each pass's pulls.
+      expect(r.pulled).toEqual(["a-pulled", "a-pulled"]);
+      expect(a.store.get("a-pulled")).toBe("r2");
     });
 
     it("never writes over a secret created during the sync with the id of one it pulls", async () => {

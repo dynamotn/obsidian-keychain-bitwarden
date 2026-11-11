@@ -453,12 +453,10 @@ describe("the core's questions", () => {
         conflicts: [{ id: "e" }],
         skipped: [{ cipherId: "f" }],
         errors: [{ id: "g" }],
-        kept: [{ id: "h", reason: "local-changed" }],
         warnings: ["1 items need a newer version of this tool: left alone", "2 synced secrets can no longer be used here: kept as they are"],
       } as unknown as SyncReport;
       expect(summarize(report)).toBe(
         "1 updated, 1 uploaded, 1 added to Bitwarden, 1 cleared, 1 conflict(s), 1 item(s) skipped, 1 error(s), " +
-          "1 edited during the sync, kept for the next one, " +
           "1 items need a newer version of this tool: left alone, 2 synced secrets can no longer be used here: kept as they are",
       );
     });
