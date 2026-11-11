@@ -462,7 +462,10 @@ class SettingsTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText("Sync now").setCta().onClick(() => void p.syncNow(true)));
     // Shown once the core has it; nothing when it cannot load (the unlock reports why).
     p.controller.deviceId().then(
-      (id) => device.setDesc(`Device id: ${id}`),
+      // Braces matter: Setting has then(), so returning it would resolve the promise with itself forever.
+      (id) => {
+        device.setDesc(`Device id: ${id}`);
+      },
       () => undefined,
     );
     new Setting(containerEl)
